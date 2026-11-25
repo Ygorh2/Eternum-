@@ -57,9 +57,12 @@ export function Layout() {
   const [memorialsLoading, setMemorialsLoading] = useState(true);
   const [memorialsError, setMemorialsError] = useState<string | null>(null);
 
-  // Carrega memoriais e tributos do banco assim que o app abre
-  // (memorials/tributes têm select público, então funciona mesmo no modo Visitante)
+  // Carrega memoriais e tributos do banco. A RLS decide o que cada pessoa vê:
+  // visitante só recebe memoriais públicos; logado recebe também os privados
+  // a que tem acesso. Por isso recarrega quando a sessão muda (login/logout).
+  const authUserId = authUser?.id ?? null;
   useEffect(() => {
+    if (authLoading) return; // espera saber quem está logado
     let cancelled = false;
 
     async function loadData() {
@@ -88,7 +91,7 @@ export function Layout() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [authLoading, authUserId]);
 
   // Handlers
   const handleLogin = (method: 'email' | 'google' | 'guest') => {
