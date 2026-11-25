@@ -1,5 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { withReaction, withComment, getReactions, hasForbiddenWords } from './postInteractions';
+import {
+  withReaction,
+  withComment,
+  withoutComment,
+  canDeleteComment,
+  getReactions,
+  hasForbiddenWords,
+} from './postInteractions';
 import type { PostInteractions } from '../data/api';
 
 const empty: PostInteractions = { reactions: {}, comments: {} };
@@ -48,5 +55,47 @@ describe('hasForbiddenWords', () => {
   it('detecta palavras proibidas sem diferenciar maiúsculas', () => {
     expect(hasForbiddenWords('Que IDIOTA')).toBe(true);
     expect(hasForbiddenWords('Descanse em paz')).toBe(false);
+  });
+});
+
+describe('withoutComment', () => {
+  const c = (id: string) => ({
+    id,
+    postKey: 'post:1',
+    memorialId: 'm1',
+    userId: 'u1',
+    authorName: 'Ana',
+    content: 'oi',
+    createdAt: '2026-11-25T10:00:00Z',
+  });
+
+  it('remove só o comentário indicado', () => {
+    const withTwo = withComment(withComment(empty, c('a')), c('b'));
+    const next = withoutComment(withTwo, 'post:1', 'a');
+    expect(next.comments['post:1'].map((x) => x.id)).toEqual(['b']);
+  });
+
+  it('não muda nada se o comentário não existe', () => {
+    const one = withComment(empty, c('a'));
+    expect(withoutComment(one, 'post:1', 'x')).toBe(one);
+    expect(withoutComment(one, 'outro', 'a')).toBe(one);
+  });
+});
+
+describe('canDeleteComment', () => {
+  const comment = { userId: 'autor' };
+
+  it('autor do comentário pode apagar', () => {
+    expect(canDeleteComment(comment, 'autor', 'dono')).toBe(true);
+  });
+
+  it('dono do memorial pode apagar (moderação)', () => {
+    expect(canDeleteComment(comment, 'dono', 'dono')).toBe(true);
+  });
+
+  it('outras pessoas e visitantes não podem', () => {
+    expect(canDeleteComment(comment, 'outra', 'dono')).toBe(false);
+    expect(canDeleteComment(comment, undefined, 'dono')).toBe(false);
+    expect(canDeleteComment(comment, undefined, undefined)).toBe(false);
   });
 });

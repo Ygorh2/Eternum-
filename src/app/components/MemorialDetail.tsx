@@ -2,8 +2,8 @@ import React, { useState } from 'react';
 import { formatDate, parseLocalDate } from '../utils/dateUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus, ImagePlus, Trash2 } from 'lucide-react';
-import type { MemorialPost, PostInteractions, PostMediaItem, ReactionType } from '../data/api';
-import { getReactions } from '../utils/postInteractions';
+import type { MemorialPost, PostComment, PostInteractions, PostMediaItem, ReactionType } from '../data/api';
+import { canDeleteComment, getReactions } from '../utils/postInteractions';
 import { galleryPostKey, memorialPostItemKey, tributePostKey } from '../utils/postKeys';
 import { PostComments } from './PostComments';
 import { PostMediaCarousel } from './PostMediaCarousel';
@@ -37,6 +37,7 @@ interface Props {
   interactionError?: string | null;
   onToggleReaction?: (memorialId: string, postKey: string, reaction: ReactionType) => void;
   onAddComment?: (memorialId: string, postKey: string, text: string) => Promise<void>;
+  onDeleteComment?: (comment: PostComment) => Promise<void>;
   onDismissError?: () => void;
   // Velas
   candles?: { count: number; litByMe: boolean };
@@ -89,6 +90,7 @@ export function MemorialDetail({
   interactionError,
   onToggleReaction,
   onAddComment,
+  onDeleteComment,
   onDismissError,
   candles = { count: 0, litByMe: false },
   candleError,
@@ -462,6 +464,8 @@ export function MemorialDetail({
                        showInput={activeCommentPost === post.id}
                        canComment={canInteract && !!onAddComment}
                        onSubmit={(text) => onAddComment!(memorial.id, post.postKey, text)}
+                       onDelete={onDeleteComment}
+                       canDelete={(c) => canDeleteComment(c, currentUserId, memorial.createdBy)}
                      />
                    </div>
                  </div>

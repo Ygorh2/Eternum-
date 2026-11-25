@@ -770,6 +770,20 @@ export async function addComment(
   return mapCommentFromDb(data, authorName);
 }
 
+/**
+ * Apaga um comentário. A policy "post_comments_delete_own_or_owner" (0006)
+ * só deixa apagar o autor do comentário ou o dono do memorial. Se o RLS
+ * bloquear, o Postgres não dá erro: só não apaga nada — por isso conferimos.
+ */
+export async function deleteComment(commentId: string) {
+  await requireUserId();
+  const { data, error } = await supabase.from('post_comments').delete().eq('id', commentId).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) {
+    throw new Error('Você não tem permissão para apagar este comentário (ou ele já foi apagado).');
+  }
+}
+
 // ------------------------------------------------------------------
 // Invites (convites para a família)
 // ------------------------------------------------------------------

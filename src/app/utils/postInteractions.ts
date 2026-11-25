@@ -35,6 +35,32 @@ export function withComment(interactions: PostInteractions, comment: PostComment
   };
 }
 
+export function withoutComment(
+  interactions: PostInteractions,
+  postKey: string,
+  commentId: string
+): PostInteractions {
+  const list = interactions.comments[postKey];
+  if (!list || !list.some((c) => c.id === commentId)) return interactions;
+  return {
+    ...interactions,
+    comments: { ...interactions.comments, [postKey]: list.filter((c) => c.id !== commentId) },
+  };
+}
+
+/**
+ * Quem pode apagar um comentário: o autor, ou o dono do memorial (moderação).
+ * Igual à policy do banco; aqui serve só para mostrar ou esconder o botão.
+ */
+export function canDeleteComment(
+  comment: Pick<PostComment, 'userId'>,
+  currentUserId?: string,
+  memorialOwnerId?: string
+): boolean {
+  if (!currentUserId) return false;
+  return comment.userId === currentUserId || memorialOwnerId === currentUserId;
+}
+
 // Filtro simples de palavras ofensivas (já existia na tela; agora compartilhado)
 const FORBIDDEN_WORDS = ['ódio', 'feio', 'estúpido', 'idiota'];
 

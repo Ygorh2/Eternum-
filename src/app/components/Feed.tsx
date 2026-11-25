@@ -3,9 +3,9 @@ import { getYear } from '../utils/dateUtils';
 import { motion } from 'motion/react';
 import { Plus, Search, Menu, User, Heart, MessageCircle, Send, MoreVertical, Star, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import type { PostInteractions, ReactionType } from '../data/api';
+import type { PostComment, PostInteractions, ReactionType } from '../data/api';
 import type { FeedPost, FeedScope, FeedTypeFilter } from '../utils/feed';
-import { getReactions } from '../utils/postInteractions';
+import { canDeleteComment, getReactions } from '../utils/postInteractions';
 import { PostComments } from './PostComments';
 import { PostMediaCarousel } from './PostMediaCarousel';
 
@@ -35,6 +35,9 @@ interface Props {
   interactionError?: string | null;
   onToggleReaction?: (memorialId: string, postKey: string, reaction: ReactionType) => void;
   onAddComment?: (memorialId: string, postKey: string, text: string) => Promise<void>;
+  onDeleteComment?: (comment: PostComment) => Promise<void>;
+  /** Usuário logado (para saber quais comentários ele pode apagar). */
+  currentUserId?: string;
   onDismissError?: () => void;
 }
 
@@ -80,6 +83,8 @@ export function Feed({
   interactionError,
   onToggleReaction,
   onAddComment,
+  onDeleteComment,
+  currentUserId,
   onDismissError,
 }: Props) {
   const { user, userMetadata } = useAuth();
@@ -496,6 +501,8 @@ export function Feed({
                         showInput
                         canComment={canInteract && !!onAddComment}
                         onSubmit={(text) => onAddComment!(post.memorial.id, post.postKey, text)}
+                        onDelete={onDeleteComment}
+                        canDelete={(c) => canDeleteComment(c, currentUserId, post.memorial.createdBy)}
                       />
                     )}
                   </div>
