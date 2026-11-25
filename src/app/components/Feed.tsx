@@ -1,13 +1,15 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { getYear } from '../utils/dateUtils';
 import { motion } from 'motion/react';
-import { Plus, Search, Menu, User, Bell, Heart, MessageCircle, Send, MoreVertical, Star, Loader2 } from 'lucide-react';
+import { Plus, Search, Menu, User, Bell, Heart, MessageCircle, Send, Star, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { PostComment, PostInteractions, ReactionType } from '../data/api';
 import type { FeedPost, FeedScope, FeedTypeFilter } from '../utils/feed';
 import { canDeleteComment, getReactions } from '../utils/postInteractions';
 import { PostComments } from './PostComments';
 import { PostMediaCarousel } from './PostMediaCarousel';
+import { PostOptionsMenu } from './PostOptionsMenu';
+import { reportTargetFromPostKey, type ReportTarget } from '../utils/reports';
 
 interface Props {
   /** Todos os memoriais visíveis (usado só na aba "Buscar Memoriais"). */
@@ -42,6 +44,8 @@ interface Props {
   /** Sininho: só aparece quando há onOpenNotifications (visitante não tem). */
   unreadNotifications?: number;
   onOpenNotifications?: () => void;
+  /** Abre a janela de denúncia (post ou comentário). Sem ela, não há opção de denunciar. */
+  onReport?: (target: ReportTarget) => void;
 }
 
 type Post = FeedPost;
@@ -87,6 +91,7 @@ export function Feed({
   onToggleReaction,
   onAddComment,
   onDeleteComment,
+  onReport,
   currentUserId,
   onDismissError,
   unreadNotifications = 0,
@@ -412,9 +417,16 @@ export function Feed({
                         </p>
                       </div>
                     </button>
-                    <button className="p-2 text-white/40 hover:text-white transition-colors flex-shrink-0">
-                      <MoreVertical size={18} />
-                    </button>
+                    {(() => {
+                      const target = reportTargetFromPostKey(post.postKey, post.memorial.id);
+                      const isMine = !!currentUserId && post.author.id === currentUserId;
+                      return (
+                        <PostOptionsMenu
+                          onReport={onReport && target && !isMine ? () => onReport(target) : undefined}
+                          reportLabel={target?.type === 'memorial' ? 'Denunciar memorial' : 'Denunciar publicação'}
+                        />
+                      );
+                    })()}
                   </div>
 
                   {/* Publicação com uma ou várias fotos/vídeos */}
@@ -528,6 +540,8 @@ export function Feed({
                         onSubmit={(text) => onAddComment!(post.memorial.id, post.postKey, text)}
                         onDelete={onDeleteComment}
                         canDelete={(c) => canDeleteComment(c, currentUserId, post.memorial.createdBy)}
+                        onReport={onReport ? (c) => onReport({ type: 'comment', id: c.id }) : undefined}
+                        canReport={(c) => !!currentUserId && c.userId !== currentUserId}
                       />
                     )}
                   </div>

@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send, Trash2 } from 'lucide-react';
+import { Flag, Send, Trash2 } from 'lucide-react';
 import type { PostComment } from '../data/api';
 import { hasForbiddenWords } from '../utils/postInteractions';
 
@@ -17,10 +17,23 @@ interface Props {
   onDelete?: (comment: PostComment) => Promise<void>;
   /** Se o usuário atual pode apagar este comentário (autor ou dono do memorial). */
   canDelete?: (comment: PostComment) => boolean;
+  /** Abre a janela de denúncia do comentário. */
+  onReport?: (comment: PostComment) => void;
+  /** Se o usuário atual pode denunciar este comentário (não é dele). */
+  canReport?: (comment: PostComment) => boolean;
 }
 
 /** Lista de comentários de um post + campo para comentar (usado no Feed e no Memorial). */
-export function PostComments({ comments, showInput, onSubmit, canComment, onDelete, canDelete }: Props) {
+export function PostComments({
+  comments,
+  showInput,
+  onSubmit,
+  canComment,
+  onDelete,
+  canDelete,
+  onReport,
+  canReport,
+}: Props) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -67,6 +80,7 @@ export function PostComments({ comments, showInput, onSubmit, canComment, onDele
         <ul className="mb-3 space-y-2" aria-label="Comentários">
           {comments.map((comment) => {
             const deletable = !!onDelete && !!canDelete?.(comment);
+            const reportable = !!onReport && !!canReport?.(comment);
             const confirming = confirmingId === comment.id;
             const deleting = deletingId === comment.id;
             return (
@@ -118,6 +132,17 @@ export function PostComments({ comments, showInput, onSubmit, canComment, onDele
                     <Trash2 size={14} />
                   </button>
                 ))}
+              {reportable && !confirming && (
+                <button
+                  type="button"
+                  onClick={() => onReport!(comment)}
+                  aria-label={`Denunciar comentário de ${comment.authorName}`}
+                  title="Denunciar comentário"
+                  className="shrink-0 p-1 -m-1 text-white/25 hover:text-red-300 transition-colors"
+                >
+                  <Flag size={13} />
+                </button>
+              )}
             </li>
             );
           })}

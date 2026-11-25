@@ -30,6 +30,8 @@ export type AppContextType = {
   refreshUnreadNotifications: () => void;
   /** Muda sempre que chega uma notificação nova (Realtime), para a tela recarregar. */
   notificationsVersion: number;
+  /** Recarrega memoriais e homenagens (ex.: depois de bloquear/desbloquear alguém). */
+  reloadData: () => void;
 };
 
 export function Layout() {
@@ -63,6 +65,8 @@ export function Layout() {
   const [tributes, setTributes] = useState<any[]>([]);
   const [memorialsLoading, setMemorialsLoading] = useState(true);
   const [memorialsError, setMemorialsError] = useState<string | null>(null);
+  const [dataVersion, setDataVersion] = useState(0);
+  const reloadData = React.useCallback(() => setDataVersion((v) => v + 1), []);
 
   // Carrega memoriais e tributos do banco. A RLS decide o que cada pessoa vê:
   // visitante só recebe memoriais públicos; logado recebe também os privados
@@ -98,7 +102,7 @@ export function Layout() {
     return () => {
       cancelled = true;
     };
-  }, [authLoading, authUserId]);
+  }, [authLoading, authUserId, dataVersion]);
 
   // Notificações: contador do sininho + aviso em tempo real (Supabase Realtime)
   const [unreadNotifications, setUnreadNotifications] = useState(0);
@@ -241,6 +245,7 @@ export function Layout() {
     setUnreadNotifications,
     refreshUnreadNotifications,
     notificationsVersion,
+    reloadData,
   };
 
   // Convert pathname to view ID for SideMenu highlighting
