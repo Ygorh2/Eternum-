@@ -1,21 +1,34 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { getYear } from '../utils/dateUtils';
 import { motion } from 'motion/react';
-import { Plus, Search, Menu, User, Heart, MessageCircle, Send, MoreVertical, Star } from 'lucide-react';
+import { Plus, Search, Menu, User, Heart, MessageCircle, Send, MoreVertical, Star, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { PostInteractions, ReactionType } from '../data/api';
+import type { FeedPost, FeedScope, FeedTypeFilter } from '../utils/feed';
 import { getReactions } from '../utils/postInteractions';
-import { galleryPostKey, memorialPostKey, tributePostKey } from '../utils/postKeys';
 import { PostComments } from './PostComments';
 
 interface Props {
+  /** Todos os memoriais visíveis (usado só na aba "Buscar Memoriais"). */
   memorials: any[];
-  tributes: any[];
+  /** Posts já carregados do feed, na ordem certa (mais novos primeiro). */
+  posts: FeedPost[];
+  scope: FeedScope;
+  onScopeChange: (scope: FeedScope) => void;
+  /** Visitante não tem aba "Seguindo". */
+  canUseFollowing?: boolean;
+  typeFilter: FeedTypeFilter;
+  onTypeFilterChange: (type: FeedTypeFilter) => void;
+  loading?: boolean;
+  loadingMore?: boolean;
+  hasMore?: boolean;
+  feedError?: string | null;
+  onLoadMore: () => void;
+  onRetry?: () => void;
   onSelectMemorial: (id: string) => void;
   onCreate: (type?: 'person' | 'pet') => void;
   onProfile: () => void;
   onOpenMenu: () => void;
-  creatorNames?: Record<string, string>;
   interactions?: PostInteractions;
   canInteract?: boolean;
   interactionError?: string | null;
@@ -24,29 +37,7 @@ interface Props {
   onDismissError?: () => void;
 }
 
-interface Post {
-  id: string;
-  /** Chave usada para salvar reações/comentários (igual à da página do memorial). */
-  postKey: string;
-  sourceType: 'memorial_created' | 'gallery_image' | 'tribute';
-  memorial: {
-    id: string;
-    name: string;
-    photo: string;
-    type: 'person' | 'pet';
-  };
-  content: {
-    image?: string;
-    video?: string;
-    videoType?: string;
-    message?: string;
-  };
-  author: {
-    name: string;
-    relationship?: string;
-  };
-  createdAt: string;
-}
+type Post = FeedPost;
 
 function formatRelativeDate(isoDate: string): string {
   if (!isoDate) return '';
@@ -66,12 +57,22 @@ const NO_INTERACTIONS: PostInteractions = { reactions: {}, comments: {} };
 
 export function Feed({
   memorials,
-  tributes,
+  posts,
+  scope,
+  onScopeChange,
+  canUseFollowing = true,
+  typeFilter,
+  onTypeFilterChange,
+  loading = false,
+  loadingMore = false,
+  hasMore = false,
+  feedError,
+  onLoadMore,
+  onRetry,
   onSelectMemorial,
   onCreate,
   onProfile,
   onOpenMenu,
-  creatorNames,
   interactions = NO_INTERACTIONS,
   canInteract = false,
   interactionError,
@@ -80,112 +81,48 @@ export function Feed({
   onDismissError,
 }: Props) {
   const { user, userMetadata } = useAuth();
-  const [activeTab, setActiveTab] = useState<'all' | 'people' | 'pets'>('all');
   const [searchMode, setSearchMode] = useState<'memorials' | 'users'>('memorials');
   const [searchTerm, setSearchTerm] = useState('');
   const [openCommentsPost, setOpenCommentsPost] = useState<string | null>(null);
-
-  // Gerar posts reais a partir de memoriais e homenagens
-  const allPosts = useMemo<Post[]>(() => {
-    const posts: Post[] = [];
-    const creatorName = (m: any): string =>
-      creatorNames?.[m.createdBy] ||
-      (m.createdBy === user?.id ? userMetadata?.display_name || user?.email?.split('@')[0] : undefined) ||
-      'Administrador';
-
-    // 1. Cada memorial gera um post de criação
-    for (const memorial of memorials) {
-      posts.push({
-        id: `memorial-created-${memorial.id}`,
-        postKey: memorialPostKey(memorial.id),
-        sourceType: 'memorial_created',
-        memorial: {
-          id: memorial.id,
-          name: memorial.name,
-          photo: memorial.photo || '',
-          type: memorial.type || 'person',
-        },
-        content: {
-          image: memorial.photo || undefined,
-          message: memorial.bio ? memorial.bio.slice(0, 200) : undefined,
-        },
-        author: {
-          name: creatorName(memorial),
-        },
-        createdAt: memorial.createdAt || new Date().toISOString(),
-      });
-
-      // 2. Cada imagem/vídeo da galeria do memorial gera um post separado
-      if (memorial.gallery && memorial.gallery.length > 0) {
-        for (let i = 0; i < memorial.gallery.length; i++) {
-          const item = memorial.gallery[i];
-          const isVideo = item.type === 'video';
-          posts.push({
-            id: `gallery-${memorial.id}-${i}`,
-            postKey: galleryPostKey(item.url),
-            sourceType: 'gallery_image',
-            memorial: {
-              id: memorial.id,
-              name: memorial.name,
-              photo: memorial.photo || '',
-              type: memorial.type || 'person',
-            },
-            content: isVideo
-              ? { video: item.url, videoType: item.mimeType }
-              : { image: item.url },
-            author: {
-              name: creatorName(memorial),
-            },
-            createdAt: memorial.createdAt || new Date().toISOString(),
-          });
-        }
-      }
-    }
-
-    // 3. Cada homenagem (tribute) gera um post
-    for (const tribute of tributes) {
-      const memorial = memorials.find((m: any) => m.id === tribute.memorialId);
-      if (!memorial) continue;
-      posts.push({
-        id: `tribute-${tribute.id}`,
-        postKey: tributePostKey(tribute.id),
-        sourceType: 'tribute',
-        memorial: {
-          id: memorial.id,
-          name: memorial.name,
-          photo: memorial.photo || '',
-          type: memorial.type || 'person',
-        },
-        content: {
-          image: tribute.image || undefined,
-          message: tribute.content,
-        },
-        author: {
-          name: tribute.author?.name || 'Usuário',
-          relationship: tribute.type,
-        },
-        createdAt: tribute.createdAt || tribute.date || new Date().toISOString(),
-      });
-    }
-
-    // Ordenar do mais recente para o mais antigo
-    return posts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [memorials, tributes, user, userMetadata, creatorNames]);
+  const scrollRef = useRef<HTMLDivElement>(null);
+  const sentinelRef = useRef<HTMLDivElement>(null);
 
   const handleReaction = (post: Post, type: ReactionType) => {
     onToggleReaction?.(post.memorial.id, post.postKey, type);
   };
 
-  // Filtrar posts por tipo de memorial
+  // Busca por nome entre os posts já carregados
   const filteredPosts = useMemo(() => {
-    let result = allPosts;
-    if (activeTab === 'people') result = result.filter(p => p.memorial.type === 'person');
-    if (activeTab === 'pets') result = result.filter(p => p.memorial.type === 'pet');
-    if (searchTerm && searchMode === 'memorials') {
-      result = result.filter(p => p.memorial.name.toLowerCase().includes(searchTerm.toLowerCase()));
+    if (!searchTerm || searchMode !== 'memorials') return posts;
+    const term = searchTerm.toLowerCase();
+    return posts.filter((p) => p.memorial.name.toLowerCase().includes(term));
+  }, [posts, searchTerm, searchMode]);
+
+  // Rolagem infinita: quando o fim da lista aparece, pede a próxima página
+  const loadMoreRef = useRef(onLoadMore);
+  loadMoreRef.current = onLoadMore;
+  const showFeed = searchMode === 'memorials';
+  useEffect(() => {
+    const sentinel = sentinelRef.current;
+    if (!showFeed || !hasMore || !sentinel || typeof IntersectionObserver === 'undefined') return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((e) => e.isIntersecting)) loadMoreRef.current();
+      },
+      { root: scrollRef.current, rootMargin: '600px 0px' }
+    );
+    observer.observe(sentinel);
+    return () => observer.disconnect();
+  }, [showFeed, hasMore, loadingMore, posts.length]);
+
+  const changeScope = (next: FeedScope) => {
+    setSearchMode('memorials');
+    if (next !== scope) {
+      onScopeChange(next);
+      setOpenCommentsPost(null);
+      scrollRef.current?.scrollTo?.({ top: 0 });
     }
-    return result;
-  }, [allPosts, activeTab, searchTerm, searchMode]);
+  };
 
   // Filtrar memoriais por busca
   const filteredMemorials = useMemo(() => {
@@ -217,15 +154,29 @@ export function Feed({
           </button>
         </div>
 
-        {/* Search Tabs */}
-        <div className="flex gap-4 text-sm font-medium mb-2">
+        {/* Abas: Seguindo / Explorar / Buscar */}
+        <div role="tablist" aria-label="Feed" className="flex gap-4 text-sm font-medium mb-2">
+          {canUseFollowing && (
+            <button
+              role="tab"
+              aria-selected={searchMode === 'memorials' && scope === 'following'}
+              onClick={() => changeScope('following')}
+              className={`transition-colors ${searchMode === 'memorials' && scope === 'following' ? 'text-blue-300' : 'text-white/50 hover:text-white'}`}
+            >
+              Seguindo
+            </button>
+          )}
           <button
-            onClick={() => setSearchMode('memorials')}
-            className={`transition-colors ${searchMode === 'memorials' ? 'text-blue-300' : 'text-white/50 hover:text-white'}`}
+            role="tab"
+            aria-selected={searchMode === 'memorials' && scope === 'explore'}
+            onClick={() => changeScope('explore')}
+            className={`transition-colors ${searchMode === 'memorials' && scope === 'explore' ? 'text-blue-300' : 'text-white/50 hover:text-white'}`}
           >
-            Feed
+            Explorar
           </button>
           <button
+            role="tab"
+            aria-selected={searchMode === 'users'}
             onClick={() => setSearchMode('users')}
             className={`transition-colors ${searchMode === 'users' ? 'text-blue-300' : 'text-white/50 hover:text-white'}`}
           >
@@ -249,20 +200,23 @@ export function Feed({
         {searchMode === 'memorials' && (
           <div className="flex gap-2">
             <button 
-              onClick={() => setActiveTab('all')}
-              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors border ${activeTab === 'all' ? 'bg-white/10 border-white/20 text-white' : 'border-transparent text-white/40 hover:bg-white/5'}`}
+              onClick={() => onTypeFilterChange('all')}
+              aria-pressed={typeFilter === 'all'}
+              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors border ${typeFilter === 'all' ? 'bg-white/10 border-white/20 text-white' : 'border-transparent text-white/40 hover:bg-white/5'}`}
             >
               Todos
             </button>
             <button 
-              onClick={() => setActiveTab('people')}
-              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors border ${activeTab === 'people' ? 'bg-white/10 border-white/20 text-white' : 'border-transparent text-white/40 hover:bg-white/5'}`}
+              onClick={() => onTypeFilterChange('person')}
+              aria-pressed={typeFilter === 'person'}
+              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors border ${typeFilter === 'person' ? 'bg-white/10 border-white/20 text-white' : 'border-transparent text-white/40 hover:bg-white/5'}`}
             >
               Pessoas
             </button>
             <button 
-              onClick={() => setActiveTab('pets')}
-              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors border ${activeTab === 'pets' ? 'bg-white/10 border-white/20 text-white' : 'border-transparent text-white/40 hover:bg-white/5'}`}
+              onClick={() => onTypeFilterChange('pet')}
+              aria-pressed={typeFilter === 'pet'}
+              className={`flex-1 py-2 rounded-lg text-xs font-medium transition-colors border ${typeFilter === 'pet' ? 'bg-white/10 border-white/20 text-white' : 'border-transparent text-white/40 hover:bg-white/5'}`}
             >
               Pets
             </button>
@@ -282,7 +236,7 @@ export function Feed({
       )}
 
       {/* Content Area */}
-      <div className="flex-1 overflow-y-auto">
+      <div ref={scrollRef} className="flex-1 overflow-y-auto">
         {searchMode === 'users' ? (
           /* Busca de Memoriais por nome */
           <div className="p-4 space-y-3 pb-24">
@@ -343,16 +297,48 @@ export function Feed({
               </div>
             </motion.button>
 
+            {/* Carregando a primeira página */}
+            {loading && (
+              <div role="status" className="flex items-center justify-center gap-2 py-16 text-white/50 text-sm">
+                <Loader2 size={18} className="animate-spin" aria-hidden="true" />
+                Carregando o feed…
+              </div>
+            )}
+
             {/* Empty State */}
-            {filteredPosts.length === 0 && (
+            {!loading && !feedError && filteredPosts.length === 0 && (
               <div className="text-center px-8 py-16">
                 <div className="w-20 h-20 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mx-auto mb-5">
                   <Star size={36} className="text-white/20" />
                 </div>
-                <h3 className="text-white/60 font-medium mb-2">Nenhum post ainda</h3>
-                <p className="text-white/30 text-sm leading-relaxed">
-                  Seu feed mostra os memoriais que você criou e os de quem você segue. Crie um memorial ou use “Buscar Pessoas” no menu para seguir alguém.
-                </p>
+                {searchTerm ? (
+                  <>
+                    <h3 className="text-white/60 font-medium mb-2">Nada encontrado</h3>
+                    <p className="text-white/30 text-sm leading-relaxed">
+                      Nenhum post carregado com “{searchTerm}”. Use “Buscar Memoriais” para procurar em todos.
+                    </p>
+                  </>
+                ) : scope === 'following' ? (
+                  <>
+                    <h3 className="text-white/60 font-medium mb-2">Nenhum post ainda</h3>
+                    <p className="text-white/30 text-sm leading-relaxed">
+                      Aqui aparecem os seus memoriais e homenagens, e os das pessoas e memoriais que você segue.
+                    </p>
+                    <button
+                      onClick={() => changeScope('explore')}
+                      className="mt-5 px-5 py-2.5 rounded-xl bg-white/10 border border-white/10 text-sm text-white/80 hover:bg-white/15 transition-colors"
+                    >
+                      Explorar memoriais
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <h3 className="text-white/60 font-medium mb-2">Nenhum post ainda</h3>
+                    <p className="text-white/30 text-sm leading-relaxed">
+                      Ainda não há memoriais públicos por aqui. Que tal criar o primeiro?
+                    </p>
+                  </>
+                )}
               </div>
             )}
 
@@ -506,6 +492,41 @@ export function Feed({
                 </motion.div>
               );
             })}
+
+            {/* Fim da lista: rolagem infinita + botão de reserva */}
+            <div ref={sentinelRef} aria-hidden="true" className="h-px" />
+            {feedError && (
+              <div role="alert" className="mx-4 my-4 px-3 py-3 rounded-lg bg-white/5 border border-white/10 text-center">
+                <p className="text-sm text-white/70">{feedError}</p>
+                {onRetry && (
+                  <button
+                    onClick={onRetry}
+                    className="mt-2 text-xs font-medium text-blue-300 hover:text-blue-200 transition-colors"
+                  >
+                    Tentar de novo
+                  </button>
+                )}
+              </div>
+            )}
+            {loadingMore && (
+              <div role="status" className="flex items-center justify-center gap-2 py-6 text-white/50 text-xs">
+                <Loader2 size={16} className="animate-spin" aria-hidden="true" />
+                Carregando mais…
+              </div>
+            )}
+            {!loading && !loadingMore && !feedError && hasMore && (
+              <div className="flex justify-center py-4">
+                <button
+                  onClick={onLoadMore}
+                  className="px-4 py-2 rounded-xl text-xs text-white/60 border border-white/10 hover:bg-white/5 hover:text-white transition-colors"
+                >
+                  Carregar mais
+                </button>
+              </div>
+            )}
+            {!loading && !feedError && !hasMore && filteredPosts.length > 0 && (
+              <p className="text-center text-xs text-white/30 py-6">Você chegou ao fim do feed 🕊️</p>
+            )}
           </div>
         )}
       </div>
