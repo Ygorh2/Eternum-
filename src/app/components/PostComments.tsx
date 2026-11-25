@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Send } from 'lucide-react';
+import { Send, Trash2 } from 'lucide-react';
 import type { PostComment } from '../data/api';
 import { hasForbiddenWords } from '../utils/postInteractions';
 
@@ -13,13 +13,34 @@ interface Props {
   onSubmit: (text: string) => Promise<void>;
   /** Visitante não pode comentar: mostra o aviso no lugar do campo. */
   canComment: boolean;
+  /** Apaga o comentário. Deve rejeitar (throw) com uma mensagem em caso de erro. */
+  onDelete?: (comment: PostComment) => Promise<void>;
+  /** Se o usuário atual pode apagar este comentário (autor ou dono do memorial). */
+  canDelete?: (comment: PostComment) => boolean;
 }
 
 /** Lista de comentários de um post + campo para comentar (usado no Feed e no Memorial). */
-export function PostComments({ comments, showInput, onSubmit, canComment }: Props) {
+export function PostComments({ comments, showInput, onSubmit, canComment, onDelete, canDelete }: Props) {
   const [text, setText] = useState('');
   const [sending, setSending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [confirmingId, setConfirmingId] = useState<string | null>(null);
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+  const [deleteError, setDeleteError] = useState<string | null>(null);
+
+  const handleDelete = async (comment: PostComment) => {
+    if (!onDelete || deletingId) return;
+    setDeletingId(comment.id);
+    setDeleteError(null);
+    try {
+      await onDelete(comment);
+      setConfirmingId(null);
+    } catch (err: any) {
+      setDeleteError(err?.message || 'Não foi possível apagar o comentário.');
+    } finally {
+      setDeletingId(null);
+    }
+  };
 
   const handleSubmit = async () => {
     const value = text.trim();
@@ -44,7 +65,11 @@ export function PostComments({ comments, showInput, onSubmit, canComment }: Prop
     <>
       {comments.length > 0 && (
         <ul className="mb-3 space-y-2" aria-label="Comentários">
-          {comments.map((comment) => (
+          {comments.map((comment) => {
+            const deletable = !!onDelete && !!canDelete?.(comment);
+            const confirming = confirmingId === comment.id;
+            const deleting = deletingId === comment.id;
+            return (
             <li key={comment.id} className="flex gap-2 text-sm">
               <div
                 aria-hidden="true"
@@ -56,9 +81,52 @@ export function PostComments({ comments, showInput, onSubmit, canComment }: Prop
                 <span className="font-medium text-white/90 text-xs">{comment.authorName}</span>{' '}
                 <span className="text-white/70 text-xs">{comment.content}</span>
               </p>
+              {deletable &&
+                (confirming ? (
+                  <div className="flex items-center gap-2 shrink-0 text-xs">
+                    <span className="text-white/50">Apagar?</span>
+                    <button
+                      type="button"
+                      onClick={() => handleDelete(comment)}
+                      disabled={deleting}
+                      className="text-red-300 hover:text-red-200 transition-colors disabled:opacity-40"
+                    >
+                      {deleting ? 'Apagando...' : 'Apagar'}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setConfirmingId(null);
+                        setDeleteError(null);
+                      }}
+                      disabled={deleting}
+                      className="text-white/50 hover:text-white/80 transition-colors disabled:opacity-40"
+                    >
+                      Cancelar
+                    </button>
+                  </div>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setConfirmingId(comment.id);
+                      setDeleteError(null);
+                    }}
+                    aria-label={`Apagar comentário de ${comment.authorName}`}
+                    className="shrink-0 p-1 -m-1 text-white/30 hover:text-red-300 transition-colors"
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                ))}
             </li>
-          ))}
+            );
+          })}
         </ul>
+      )}
+      {deleteError && (
+        <p role="alert" className="mb-3 text-xs text-red-300">
+          {deleteError}
+        </p>
       )}
 
       {showInput &&

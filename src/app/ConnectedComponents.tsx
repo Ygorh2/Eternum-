@@ -20,7 +20,7 @@ import { PublicProfile } from './components/PublicProfile';
 import { AcceptInvite } from './components/AcceptInvite';
 import { People } from './components/People';
 import { CreatePost } from './components/CreatePost';
-import { getReactions, withComment, withReaction } from './utils/postInteractions';
+import { getReactions, withComment, withoutComment, withReaction } from './utils/postInteractions';
 import { tributeIdFromPostKey } from './utils/postKeys';
 import {
   appendRows,
@@ -110,12 +110,19 @@ function usePostInteractions(memorialIds: string[], user: any) {
     setInteractions((prev) => withComment(prev, saved));
   };
 
+  const deleteComment = async (comment: api.PostComment) => {
+    if (!userId) throw new Error('Entre com sua conta para apagar comentários.');
+    await api.deleteComment(comment.id);
+    setInteractions((prev) => withoutComment(prev, comment.postKey, comment.id));
+  };
+
   return {
     interactions,
     canInteract: !!userId,
     interactionError: error,
     onToggleReaction: toggleReaction,
     onAddComment: addComment,
+    onDeleteComment: deleteComment,
     onDismissError: () => setError(null),
   };
 }
@@ -431,6 +438,7 @@ export function ConnectedFeed() {
       memorials={memorials}
       {...feed}
       {...postInteractions}
+      currentUserId={user && !user.isGuest ? user.id : undefined}
       onSelectMemorial={(id) => navigate(`/memorial/${id}`)}
       onCreate={(type) => navigate(`/create-memorial?type=${type || 'person'}`)}
       onProfile={() => navigate('/profile')}

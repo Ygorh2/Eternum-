@@ -52,4 +52,46 @@ describe('<PostComments />', () => {
     expect(screen.queryByLabelText('Escreva um comentário')).not.toBeInTheDocument()
     expect(screen.getByText('Entre com sua conta para comentar.')).toBeInTheDocument()
   })
+
+  describe('apagar comentário', () => {
+    it('não mostra o botão para quem não pode apagar', () => {
+      render(
+        <PostComments comments={[comment]} showInput={false} canComment onSubmit={vi.fn()} onDelete={vi.fn()} canDelete={() => false} />,
+      )
+      expect(screen.queryByLabelText(/apagar comentário/i)).not.toBeInTheDocument()
+    })
+
+    it('pede confirmação e apaga', async () => {
+      const onDelete = vi.fn().mockResolvedValue(undefined)
+      render(
+        <PostComments comments={[comment]} showInput={false} canComment onSubmit={vi.fn()} onDelete={onDelete} canDelete={() => true} />,
+      )
+      await userEvent.click(screen.getByLabelText('Apagar comentário de Ana'))
+      expect(onDelete).not.toHaveBeenCalled()
+      await userEvent.click(screen.getByRole('button', { name: 'Apagar' }))
+      expect(onDelete).toHaveBeenCalledWith(comment)
+    })
+
+    it('cancelar não apaga', async () => {
+      const onDelete = vi.fn()
+      render(
+        <PostComments comments={[comment]} showInput={false} canComment onSubmit={vi.fn()} onDelete={onDelete} canDelete={() => true} />,
+      )
+      await userEvent.click(screen.getByLabelText('Apagar comentário de Ana'))
+      await userEvent.click(screen.getByRole('button', { name: 'Cancelar' }))
+      expect(onDelete).not.toHaveBeenCalled()
+      expect(screen.getByLabelText('Apagar comentário de Ana')).toBeInTheDocument()
+    })
+
+    it('mostra o erro se não conseguir apagar', async () => {
+      const onDelete = vi.fn().mockRejectedValue(new Error('Sem permissão'))
+      render(
+        <PostComments comments={[comment]} showInput={false} canComment onSubmit={vi.fn()} onDelete={onDelete} canDelete={() => true} />,
+      )
+      await userEvent.click(screen.getByLabelText('Apagar comentário de Ana'))
+      await userEvent.click(screen.getByRole('button', { name: 'Apagar' }))
+      expect(await screen.findByRole('alert')).toHaveTextContent('Sem permissão')
+      expect(screen.getByText('Saudades eternas')).toBeInTheDocument()
+    })
+  })
 })
