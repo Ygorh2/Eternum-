@@ -6,6 +6,7 @@ import {
   ConnectedFeed,
   ConnectedMemorialDetail,
   ConnectedCreateMemorial,
+  ConnectedEditMemorial,
   ConnectedLivingMemory,
   ConnectedWriteTribute,
   ConnectedTheSky,
@@ -49,6 +50,14 @@ export const router = createBrowserRouter([
         element: (
           <ProtectedRoute>
             <ConnectedCreatePost />
+          </ProtectedRoute>
+        )
+      },
+      {
+        path: "memorial/:id/edit",
+        element: (
+          <ProtectedRoute>
+            <ConnectedEditMemorial />
           </ProtectedRoute>
         )
       },
