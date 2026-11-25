@@ -674,6 +674,39 @@ export async function fetchFeedMemorialPostsPage(q: FeedQuery) {
 }
 
 // ------------------------------------------------------------------
+// Grade de fotos do perfil: publicações feitas por uma pessoa
+// ------------------------------------------------------------------
+
+export const PROFILE_POSTS_PAGE_SIZE = 18;
+
+/**
+ * Publicações (memorial_posts) feitas por esta pessoa, da mais recente para a
+ * mais antiga, em páginas. A RLS (can_view_memorial) já esconde as publicações
+ * de memoriais privados que quem está vendo não pode acessar, e as fotos saem
+ * com links temporários (assinados), como no resto do app.
+ * `before` = created_at da última publicação já carregada.
+ */
+export async function fetchUserPostsPage(
+  userId: string,
+  before?: string,
+  limit = PROFILE_POSTS_PAGE_SIZE
+): Promise<MemorialPost[]> {
+  if (onlyUuids([userId]).length === 0) return [];
+  let req = supabase
+    .from('memorial_posts')
+    .select(POST_COLUMNS)
+    .eq('author_id', userId)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(limit);
+  if (before) req = req.lt('created_at', before);
+  const { data, error } = await req;
+  if (isMissingTable(error)) return [];
+  if (error) throw error;
+  return withSignedItems((data || []).map((row: any) => mapPostFromDb(row, '')));
+}
+
+// ------------------------------------------------------------------
 // Candles
 // ------------------------------------------------------------------
 
