@@ -1505,3 +1505,54 @@ export async function updateReportStatus(reportId: string, status: ReportStatus)
   if (error) throw error;
   if (!data || data.length === 0) throw new Error('Você não tem permissão para analisar denúncias.');
 }
+
+// ------------------------------------------------------------------
+// Cadastro com confirmação de e-mail
+// ------------------------------------------------------------------
+
+export interface SignUpInput {
+  email: string;
+  password: string;
+  displayName: string;
+  username: string;
+  birthDate: string;
+}
+
+/**
+ * Cria a conta pelo próprio Supabase Auth. Com "Confirm email" ligado no
+ * painel, o Supabase manda um e-mail com o link de confirmação e NÃO devolve
+ * sessão: a pessoa só entra depois de clicar no link.
+ *
+ * `redirectTo` é para onde o link do e-mail leva de volta (precisa estar na
+ * lista de Redirect URLs do Supabase).
+ *
+ * Obs.: por segurança, quando o e-mail já existe o Supabase responde como se
+ * tivesse dado certo (não revela quem tem conta). Por isso a tela mostra
+ * "confira seu e-mail" nos dois casos.
+ */
+export async function signUpWithEmail(input: SignUpInput, redirectTo: string) {
+  const { data, error } = await supabase.auth.signUp({
+    email: input.email.trim(),
+    password: input.password,
+    options: {
+      emailRedirectTo: redirectTo,
+      data: {
+        display_name: input.displayName.trim().slice(0, 100),
+        username: input.username.trim().slice(0, 50),
+        birth_date: input.birthDate,
+      },
+    },
+  });
+  if (error) throw error;
+  return { needsConfirmation: !data.session };
+}
+
+/** Reenvia o e-mail de confirmação de cadastro. */
+export async function resendSignupConfirmation(email: string, redirectTo: string) {
+  const { error } = await supabase.auth.resend({
+    type: 'signup',
+    email: email.trim(),
+    options: { emailRedirectTo: redirectTo },
+  });
+  if (error) throw error;
+}
