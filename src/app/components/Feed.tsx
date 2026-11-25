@@ -1,7 +1,7 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { getYear } from '../utils/dateUtils';
 import { motion } from 'motion/react';
-import { Plus, Search, Menu, User, Heart, MessageCircle, Send, MoreVertical, Star, Loader2 } from 'lucide-react';
+import { Plus, Search, Menu, User, Bell, Heart, MessageCircle, Send, MoreVertical, Star, Loader2 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import type { PostInteractions, ReactionType } from '../data/api';
 import type { FeedPost, FeedScope, FeedTypeFilter } from '../utils/feed';
@@ -36,6 +36,9 @@ interface Props {
   onToggleReaction?: (memorialId: string, postKey: string, reaction: ReactionType) => void;
   onAddComment?: (memorialId: string, postKey: string, text: string) => Promise<void>;
   onDismissError?: () => void;
+  /** Sininho: só aparece quando há onOpenNotifications (visitante não tem). */
+  unreadNotifications?: number;
+  onOpenNotifications?: () => void;
 }
 
 type Post = FeedPost;
@@ -81,6 +84,8 @@ export function Feed({
   onToggleReaction,
   onAddComment,
   onDismissError,
+  unreadNotifications = 0,
+  onOpenNotifications,
 }: Props) {
   const { user, userMetadata } = useAuth();
   const [searchMode, setSearchMode] = useState<'memorials' | 'users'>('memorials');
@@ -145,7 +150,26 @@ export function Feed({
             </button>
             <h1 className="text-xl font-serif text-blue-100">Feed</h1>
           </div>
-          <button onClick={onProfile} className="p-1.5 text-blue-200/60 hover:text-blue-100 transition-colors">
+          <div className="flex items-center gap-1">
+          {onOpenNotifications && (
+            <button
+              onClick={onOpenNotifications}
+              aria-label={
+                unreadNotifications > 0
+                  ? `Notificações: ${unreadNotifications} não lida${unreadNotifications === 1 ? '' : 's'}`
+                  : 'Notificações'
+              }
+              className="relative p-2 text-white/70 hover:text-white transition-colors"
+            >
+              <Bell size={22} />
+              {unreadNotifications > 0 && (
+                <span className="absolute top-1 right-0.5 min-w-[18px] h-[18px] px-1 rounded-full bg-rose-500 text-white text-[10px] font-semibold leading-[18px] text-center shadow-sm">
+                  {unreadNotifications > 99 ? '99+' : unreadNotifications}
+                </span>
+              )}
+            </button>
+          )}
+          <button onClick={onProfile} aria-label="Meu perfil" className="p-1.5 text-blue-200/60 hover:text-blue-100 transition-colors">
             <div className="w-8 h-8 rounded-full bg-white/10 overflow-hidden border border-white/20 shadow-sm flex items-center justify-center">
               {user?.user_metadata?.avatar_url ? (
                 <img src={user.user_metadata.avatar_url} alt={userMetadata?.display_name || 'Perfil'} className="w-full h-full object-cover" />
@@ -154,6 +178,7 @@ export function Feed({
               )}
             </div>
           </button>
+          </div>
         </div>
 
         {/* Abas: Seguindo / Explorar / Buscar */}

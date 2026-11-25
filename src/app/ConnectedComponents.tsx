@@ -14,6 +14,8 @@ import { MyMemorials } from './components/MyMemorials';
 import { Pets } from './components/Pets';
 import { Invites } from './components/Invites';
 import { Settings } from './components/Settings';
+import { Notifications } from './components/Notifications';
+import { notificationTarget } from './utils/notifications';
 import { Auth } from './components/Auth';
 import { Onboarding } from './components/Onboarding';
 import { PublicProfile } from './components/PublicProfile';
@@ -419,7 +421,7 @@ function useFeed(user: any) {
 }
 
 export function ConnectedFeed() {
-  const { memorials, user, setIsMenuOpen } = useApp();
+  const { memorials, user, setIsMenuOpen, unreadNotifications } = useApp();
   const navigate = useNavigate();
 
   const feed = useFeed(user);
@@ -435,6 +437,8 @@ export function ConnectedFeed() {
       onCreate={(type) => navigate(`/create-memorial?type=${type || 'person'}`)}
       onProfile={() => navigate('/profile')}
       onOpenMenu={() => setIsMenuOpen(true)}
+      unreadNotifications={unreadNotifications}
+      onOpenNotifications={user && !user.isGuest ? () => navigate('/notifications') : undefined}
     />
   );
 }
@@ -496,10 +500,148 @@ export function ConnectedInvites() {
   return <Invites onOpenMenu={() => setIsMenuOpen(true)} />;
 }
 
+/** Liga/desliga as notificações (salvo no banco, tabela notification_settings). */
+function useNotificationsPreference(user: any) {
+  const isGuest = !user || user.isGuest;
+  const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (isGuest) return;
+    let cancelled = false;
+    api
+      .fetchNotificationsEnabled()
+      .then((value) => !cancelled && setEnabled(value))
+      .catch((err) => {
+        console.error('Erro ao carregar preferência de notificações:', err);
+        if (!cancelled) {
+          setEnabled(true);
+          setError('Não foi possível carregar sua preferência de notificações.');
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isGuest, user?.id]);
+
+  const toggle = async (next: boolean) => {
+    const previous = enabled;
+    setEnabled(next); // otimista
+    setError(null);
+    try {
+      await api.setNotificationsEnabled(next);
+    } catch (err: any) {
+      console.error('Erro ao salvar preferência de notificações:', err);
+      setEnabled(previous);
+      setError(err?.message || 'Não foi possível salvar. Tente de novo.');
+    }
+  };
+
+  return { enabled: isGuest ? null : enabled, error, toggle };
+}
+
 export function ConnectedSettings() {
-  const { handleLogout } = useApp();
+  const { handleLogout, user } = useApp();
   const navigate = useNavigate();
-  return <Settings onBack={() => navigate('/profile')} onLogout={handleLogout} />;
+  const pref = useNotificationsPreference(user);
+  return (
+    <Settings
+      onBack={() => navigate('/profile')}
+      onLogout={handleLogout}
+      notificationsEnabled={pref.enabled}
+      onToggleNotifications={pref.toggle}
+      notificationsError={pref.error}
+    />
+  );
+}
+
+export function ConnectedNotifications() {
+  const { user, setUnreadNotifications, notificationsVersion } = useApp();
+  const navigate = useNavigate();
+  const isGuest = !user || user.isGuest;
+  const pref = useNotificationsPreference(user);
+  const [items, setItems] = useState<api.AppNotification[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [reloadKey, setReloadKey] = useState(0);
+
+  // Carrega a 1ª página e marca tudo como lido. Os itens continuam
+  // destacados como "Novas" nesta visita (vêm com read=false da busca).
+  useEffect(() => {
+    if (isGuest) return;
+    let cancelled = false;
+    setError(null);
+    api
+      .fetchNotifications()
+      .then(async (page) => {
+        if (cancelled) return;
+        setItems((prev) => {
+          // Recarga por Realtime: mantém o destaque "Novas" do que já estava na tela
+          const unreadBefore = new Set(prev.filter((n) => !n.read).map((n) => n.id));
+          return page.map((n) => (unreadBefore.has(n.id) ? { ...n, read: false } : n));
+        });
+        setHasMore(page.length >= api.NOTIFICATIONS_PAGE_SIZE);
+        if (page.some((n) => !n.read)) {
+          await api.markAllNotificationsRead();
+        }
+        if (!cancelled) setUnreadNotifications(0);
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar notificações:', err);
+        if (!cancelled) setError('Não foi possível carregar as notificações.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isGuest, user?.id, notificationsVersion, reloadKey]);
+
+  const loadMore = async () => {
+    const last = items[items.length - 1];
+    if (!last || loadingMore) return;
+    setLoadingMore(true);
+    try {
+      const page = await api.fetchNotifications(last.createdAt);
+      setItems((prev) => {
+        const seen = new Set(prev.map((n) => n.id));
+        return [...prev, ...page.filter((n) => !seen.has(n.id))];
+      });
+      setHasMore(page.length >= api.NOTIFICATIONS_PAGE_SIZE);
+    } catch (err) {
+      console.error('Erro ao carregar mais notificações:', err);
+      setError('Não foi possível carregar mais notificações.');
+    } finally {
+      setLoadingMore(false);
+    }
+  };
+
+  if (isGuest) return <Navigate to="/feed" replace />;
+
+  return (
+    <Notifications
+      notifications={items}
+      loading={loading}
+      loadingMore={loadingMore}
+      hasMore={hasMore}
+      error={error}
+      enabled={pref.enabled !== false}
+      onBack={() => navigate(-1)}
+      onOpen={(n) => {
+        const target = notificationTarget(n);
+        if (target) navigate(target);
+      }}
+      onLoadMore={loadMore}
+      onRetry={() => {
+        setLoading(true);
+        setReloadKey((k) => k + 1);
+      }}
+      onOpenSettings={() => navigate('/settings')}
+    />
+  );
 }
 
 export function ConnectedProfile() {

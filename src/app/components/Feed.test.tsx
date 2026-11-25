@@ -108,3 +108,19 @@ describe('<Feed /> publicações', () => {
     expect(screen.getByText('João')).toBeInTheDocument()
   })
 })
+
+describe('<Feed /> sininho de notificações', () => {
+  it('mostra o número de não lidas e abre a tela', async () => {
+    const onOpenNotifications = vi.fn()
+    renderFeed({ unreadNotifications: 3, onOpenNotifications })
+    const bell = screen.getByRole('button', { name: 'Notificações: 3 não lidas' })
+    expect(bell).toHaveTextContent('3')
+    await userEvent.click(bell)
+    expect(onOpenNotifications).toHaveBeenCalled()
+  })
+
+  it('visitante não vê o sininho', () => {
+    renderFeed()
+    expect(screen.queryByRole('button', { name: /Notificações/ })).not.toBeInTheDocument()
+  })
+})

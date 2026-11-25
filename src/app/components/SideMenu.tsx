@@ -1,8 +1,8 @@
 import React from 'react';
 import { motion, AnimatePresence } from 'motion/react';
-import { X, Home, Cloud, Heart, User, Mail, Bone, Book, Users } from 'lucide-react';
+import { X, Home, Cloud, Heart, User, Mail, Bone, Book, Users, Bell } from 'lucide-react';
 
-export type View = 'onboarding' | 'auth' | 'feed' | 'memorial' | 'create-memorial' | 'living-memory' | 'profile' | 'write-tribute' | 'sky' | 'invites' | 'my-memorials' | 'pets' | 'settings' | 'people';
+export type View = 'onboarding' | 'auth' | 'feed' | 'memorial' | 'create-memorial' | 'living-memory' | 'profile' | 'write-tribute' | 'sky' | 'invites' | 'my-memorials' | 'pets' | 'settings' | 'people' | 'notifications';
 
 interface Props {
   isOpen: boolean;
@@ -14,6 +14,7 @@ interface Props {
 export function SideMenu({ isOpen, onClose, currentView, onNavigate }: Props) {
   const menuItems = [
     { id: 'feed', label: 'Feed', icon: Home },
+    { id: 'notifications', label: 'Notificações', icon: Bell },
     { id: 'sky', label: 'O Céu', icon: Cloud },
     { id: 'my-memorials', label: 'Meus Memoriais', icon: Book },
     { id: 'pets', label: 'Meus Pets', icon: Bone },

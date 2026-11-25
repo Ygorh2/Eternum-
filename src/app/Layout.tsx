@@ -24,6 +24,12 @@ export type AppContextType = {
   handleDeleteMemorial: (id: string) => void;
   handleUpdateMemorial: (id: string, changes: any) => Promise<any>;
   handleAddTribute: (t: any) => void;
+  /** Notificações não lidas (sininho). */
+  unreadNotifications: number;
+  setUnreadNotifications: React.Dispatch<React.SetStateAction<number>>;
+  refreshUnreadNotifications: () => void;
+  /** Muda sempre que chega uma notificação nova (Realtime), para a tela recarregar. */
+  notificationsVersion: number;
 };
 
 export function Layout() {
@@ -93,6 +99,41 @@ export function Layout() {
       cancelled = true;
     };
   }, [authLoading, authUserId]);
+
+  // Notificações: contador do sininho + aviso em tempo real (Supabase Realtime)
+  const [unreadNotifications, setUnreadNotifications] = useState(0);
+  const [notificationsVersion, setNotificationsVersion] = useState(0);
+  const unreadRequest = React.useRef(0);
+  const refreshUnreadNotifications = React.useCallback(() => {
+    if (!authUserId) {
+      setUnreadNotifications(0);
+      return;
+    }
+    const requestId = ++unreadRequest.current;
+    api
+      .countUnreadNotifications()
+      .then((count) => {
+        if (requestId === unreadRequest.current) setUnreadNotifications(count);
+      })
+      .catch((err) => console.error('Erro ao contar notificações:', err));
+  }, [authUserId]);
+
+  useEffect(() => {
+    if (authLoading) return;
+    refreshUnreadNotifications();
+    if (!authUserId) return;
+    const unsubscribe = api.subscribeToNotifications(authUserId, () => {
+      refreshUnreadNotifications();
+      setNotificationsVersion((v) => v + 1);
+    });
+    // Ao voltar para a aba, confere de novo (caso o Realtime tenha caído)
+    const onFocus = () => refreshUnreadNotifications();
+    window.addEventListener('focus', onFocus);
+    return () => {
+      unsubscribe();
+      window.removeEventListener('focus', onFocus);
+    };
+  }, [authLoading, authUserId, refreshUnreadNotifications]);
 
   // Handlers
   const handleLogin = (method: 'email' | 'google' | 'guest') => {
@@ -196,6 +237,10 @@ export function Layout() {
     handleDeleteMemorial,
     handleUpdateMemorial,
     handleAddTribute,
+    unreadNotifications,
+    setUnreadNotifications,
+    refreshUnreadNotifications,
+    notificationsVersion,
   };
 
   // Convert pathname to view ID for SideMenu highlighting

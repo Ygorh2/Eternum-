@@ -6,11 +6,21 @@ import { useAuth } from '../contexts/AuthContext';
 interface Props {
   onBack: () => void;
   onLogout: () => void;
+  /** Valor salvo no banco; null enquanto carrega. */
+  notificationsEnabled?: boolean | null;
+  onToggleNotifications?: (enabled: boolean) => void;
+  notificationsError?: string | null;
 }
 
-export function Settings({ onBack, onLogout }: Props) {
+export function Settings({
+  onBack,
+  onLogout,
+  notificationsEnabled = null,
+  onToggleNotifications,
+  notificationsError,
+}: Props) {
   const { user, updateEmail, updatePassword } = useAuth();
-  const [notifications, setNotifications] = useState(true);
+  const notifications = notificationsEnabled !== false;
   const [darkMode, setDarkMode] = useState(true);
 
   // Alterar email
@@ -174,17 +184,28 @@ export function Settings({ onBack, onLogout }: Props) {
         <section>
           <h2 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-3 ml-2">Preferências</h2>
           <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
-             <div className="w-full p-4 flex items-center justify-between border-b border-white/5">
-                <div className="flex items-center gap-3">
-                   <div className="p-2 bg-red-500/10 text-red-300 rounded-lg"><Bell size={18} /></div>
-                   <span className="text-sm font-medium">Notificações</span>
+             <div className="w-full p-4 border-b border-white/5">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                     <div className="p-2 bg-red-500/10 text-red-300 rounded-lg"><Bell size={18} /></div>
+                     <div className="text-left">
+                       <span id="notifications-label" className="text-sm font-medium block">Notificações</span>
+                       <span className="text-xs text-white/40">Seguidores, velas, reações, comentários e homenagens</span>
+                     </div>
+                  </div>
+                  <button
+                    type="button"
+                    role="switch"
+                    aria-checked={notifications}
+                    aria-labelledby="notifications-label"
+                    disabled={notificationsEnabled === null || !onToggleNotifications}
+                    onClick={() => onToggleNotifications?.(!notifications)}
+                    className={`w-10 h-6 shrink-0 rounded-full p-1 transition-colors disabled:opacity-50 ${notifications ? 'bg-blue-500' : 'bg-white/20'}`}
+                  >
+                    <motion.div className="w-4 h-4 bg-white rounded-full shadow-sm" layout transition={{ type: 'spring', stiffness: 700, damping: 30 }} animate={{ x: notifications ? 16 : 0 }} />
+                  </button>
                 </div>
-                <div 
-                  className={`w-10 h-6 rounded-full p-1 cursor-pointer transition-colors ${notifications ? 'bg-blue-500' : 'bg-white/20'}`}
-                  onClick={() => setNotifications(!notifications)}
-                >
-                  <motion.div className="w-4 h-4 bg-white rounded-full shadow-sm" layout transition={{ type: 'spring', stiffness: 700, damping: 30 }} animate={{ x: notifications ? 16 : 0 }} />
-                </div>
+                {notificationsError && <p role="alert" className="text-xs text-red-300 mt-2">{notificationsError}</p>}
              </div>
              
              <button className="w-full p-4 flex items-center justify-between hover:bg-white/5 transition-colors border-b border-white/5">

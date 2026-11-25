@@ -993,3 +993,150 @@ export async function unfollowUser(targetUserId: string) {
     .eq('following_id', targetUserId);
   if (error) throw error;
 }
+
+// ------------------------------------------------------------------
+// Notificações (migration 0013). As notificações são criadas por gatilhos
+// no banco; o app só lê, marca como lidas e liga/desliga.
+// ------------------------------------------------------------------
+
+export type NotificationType = 'follow' | 'candle' | 'reaction' | 'comment' | 'tribute' | 'post';
+
+export type AppNotification = {
+  id: string;
+  type: NotificationType;
+  actorId: string | null;
+  actorName: string;
+  memorialId: string | null;
+  /** Lido pela RLS de memorials; vazio se a pessoa não puder mais ver o memorial. */
+  memorialName: string;
+  postKey: string | null;
+  reaction: ReactionType | null;
+  createdAt: string;
+  read: boolean;
+};
+
+export const NOTIFICATIONS_PAGE_SIZE = 30;
+
+/** Tabela de notificações ainda não criada (0013 não aplicada): o app segue funcionando. */
+function isMissingNotificationsTable(error: any): boolean {
+  if (!error) return false;
+  if (error.code === '42P01' || error.code === 'PGRST205') {
+    console.warn('Notificações ainda não disponíveis (rode a migration 0013):', error.message);
+    return true;
+  }
+  return false;
+}
+
+/** Notificações do usuário logado, mais novas primeiro. `before` = created_at da última já carregada. */
+export async function fetchNotifications(before?: string): Promise<AppNotification[]> {
+  const userId = await requireUserId();
+  let request = supabase
+    .from('notifications')
+    .select('id, type, actor_id, memorial_id, post_key, reaction, created_at, read_at')
+    .eq('recipient_id', userId)
+    .order('created_at', { ascending: false })
+    .limit(NOTIFICATIONS_PAGE_SIZE);
+  if (before) request = request.lt('created_at', before);
+  const { data, error } = await request;
+  if (isMissingNotificationsTable(error)) return [];
+  if (error) throw error;
+  const rows = data || [];
+
+  const actorIds = Array.from(new Set(rows.map((r: any) => r.actor_id).filter(Boolean)));
+  const memorialIds = onlyUuids(Array.from(new Set(rows.map((r: any) => r.memorial_id).filter(Boolean))));
+  const [names, memorialNames] = await Promise.all([
+    fetchProfilesByIds(actorIds),
+    fetchMemorialNames(memorialIds),
+  ]);
+
+  return rows.map((row: any) => ({
+    id: row.id,
+    type: row.type,
+    actorId: row.actor_id,
+    actorName: (row.actor_id && names[row.actor_id]) || 'Alguém',
+    memorialId: row.memorial_id,
+    memorialName: (row.memorial_id && memorialNames[row.memorial_id]) || '',
+    postKey: row.post_key,
+    reaction: row.reaction === 'amen' || row.reaction === 'love' ? row.reaction : null,
+    createdAt: row.created_at,
+    read: !!row.read_at,
+  }));
+}
+
+/** Mapa id -> nome, só dos memoriais que a pessoa pode ver (RLS). */
+async function fetchMemorialNames(ids: string[]): Promise<Record<string, string>> {
+  const map: Record<string, string> = {};
+  for (const part of chunk(ids, 100)) {
+    const { data, error } = await supabase.from('memorials').select('id, name').in('id', part);
+    if (error) throw error;
+    (data || []).forEach((row: any) => {
+      map[row.id] = row.name;
+    });
+  }
+  return map;
+}
+
+export async function countUnreadNotifications(): Promise<number> {
+  const userId = await requireUserId();
+  const { count, error } = await supabase
+    .from('notifications')
+    .select('id', { count: 'exact', head: true })
+    .eq('recipient_id', userId)
+    .is('read_at', null);
+  if (isMissingNotificationsTable(error)) return 0;
+  if (error) throw error;
+  return count || 0;
+}
+
+export async function markAllNotificationsRead() {
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from('notifications')
+    .update({ read_at: new Date().toISOString() })
+    .eq('recipient_id', userId)
+    .is('read_at', null);
+  if (isMissingNotificationsTable(error)) return;
+  if (error) throw error;
+}
+
+/** Chave "Notificações" em Configurações. Sem registro = ligada. */
+export async function fetchNotificationsEnabled(): Promise<boolean> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase
+    .from('notification_settings')
+    .select('enabled')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (isMissingNotificationsTable(error)) return true;
+  if (error) throw error;
+  return data ? !!data.enabled : true;
+}
+
+export async function setNotificationsEnabled(enabled: boolean) {
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from('notification_settings')
+    .upsert({ user_id: userId, enabled, updated_at: new Date().toISOString() });
+  if (isMissingNotificationsTable(error)) {
+    throw new Error('As notificações ainda não foram ativadas no banco (migration 0013).');
+  }
+  if (error) throw error;
+}
+
+/**
+ * Avisa quando chega uma notificação nova do usuário (Supabase Realtime).
+ * A RLS garante que cada pessoa só recebe as suas. Devolve a função para parar.
+ */
+export function subscribeToNotifications(userId: string, onChange: () => void): () => void {
+  const channel = supabase
+    .channel(`notifications:${userId}`)
+    .on(
+      'postgres_changes',
+      { event: 'INSERT', schema: 'public', table: 'notifications', filter: `recipient_id=eq.${userId}` },
+      () => onChange()
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(channel);
+  };
+}

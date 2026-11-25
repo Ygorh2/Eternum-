@@ -15,6 +15,7 @@ import {
   ConnectedInvites,
   ConnectedProfile,
   ConnectedSettings,
+  ConnectedNotifications,
   ConnectedPublicProfile,
   ConnectedAcceptInvite,
   ConnectedPeople,
@@ -132,6 +133,14 @@ export const router = createBrowserRouter([
             <ConnectedSettings />
           </ProtectedRoute>
         ) 
+      },
+      {
+        path: "notifications",
+        element: (
+          <ProtectedRoute>
+            <ConnectedNotifications />
+          </ProtectedRoute>
+        )
       },
       { 
         path: "user/:id", 
