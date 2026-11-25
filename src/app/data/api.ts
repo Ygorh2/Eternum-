@@ -354,7 +354,7 @@ export async function isFollowingUser(targetUserId: string): Promise<boolean> {
   const userId = await requireUserId();
   const { data, error } = await supabase
     .from('follows')
-    .select('id')
+    .select('following_id') // follows não tem coluna "id" (PK composta)
     .eq('follower_id', userId)
     .eq('following_id', targetUserId)
     .maybeSingle();
@@ -369,22 +369,36 @@ export async function fetchFollowingIds(userId: string): Promise<Set<string>> {
   return new Set((data || []).map((r: any) => r.following_id));
 }
 
+/**
+ * Busca os perfis de uma lista de ids, mantendo a ordem dos ids.
+ * As FKs de follows apontam para auth.users (não para profiles), por isso
+ * não dá para fazer o "embed" follows -> profiles do PostgREST; buscamos em
+ * duas etapas. Ids sem perfil criado são ignorados.
+ */
+async function fetchProfilesInOrder(ids: string[]) {
+  if (ids.length === 0) return [];
+  const { data, error } = await supabase.from('profiles').select('*').in('id', ids);
+  if (error) throw error;
+  const byId = new Map((data || []).map((row: any) => [row.id, row]));
+  return ids.filter((id) => byId.has(id)).map((id) => mapProfileFromDb(byId.get(id)));
+}
+
 export async function fetchFollowers(userId: string) {
   const { data, error } = await supabase
     .from('follows')
-    .select('follower:profiles!follows_follower_id_fkey(*)')
+    .select('follower_id')
     .eq('following_id', userId);
   if (error) throw error;
-  return (data || []).map((r: any) => mapProfileFromDb(r.follower));
+  return fetchProfilesInOrder((data || []).map((r: any) => r.follower_id));
 }
 
 export async function fetchFollowing(userId: string) {
   const { data, error } = await supabase
     .from('follows')
-    .select('following:profiles!follows_following_id_fkey(*)')
+    .select('following_id')
     .eq('follower_id', userId);
   if (error) throw error;
-  return (data || []).map((r: any) => mapProfileFromDb(r.following));
+  return fetchProfilesInOrder((data || []).map((r: any) => r.following_id));
 }
 
 export async function followUser(targetUserId: string) {
