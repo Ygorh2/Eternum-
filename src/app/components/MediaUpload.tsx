@@ -1,6 +1,14 @@
-import React, { useRef, useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { motion, AnimatePresence } from 'motion/react';
 import { Upload, X, Image as ImageIcon, Video, Play } from 'lucide-react';
+import {
+  MAX_IMAGE_SIZE_MB,
+  MAX_VIDEO_SIZE_MB,
+  mediaKindOf,
+  validateMediaFiles,
+  type MediaAccept,
+  type RejectedFile,
+} from '../utils/mediaValidation';
 
 interface MediaFile {
   id: string;
@@ -12,11 +20,16 @@ interface MediaFile {
 interface Props {
   onMediaChange: (files: File[]) => void;
   maxFiles?: number;
-  accept?: 'image' | 'video' | 'both';
+  accept?: MediaAccept;
   preview?: boolean;
   label?: string;
   className?: string;
+  maxImageSizeMB?: number;
+  maxVideoSizeMB?: number;
+  disabled?: boolean;
 }
+
+let nextMediaId = 0;
 
 export function MediaUpload({ 
   onMediaChange, 
@@ -24,10 +37,19 @@ export function MediaUpload({
   accept = 'both',
   preview = true,
   label = 'Adicionar Foto ou Vídeo',
-  className = ''
+  className = '',
+  maxImageSizeMB = MAX_IMAGE_SIZE_MB,
+  maxVideoSizeMB = MAX_VIDEO_SIZE_MB,
+  disabled = false,
 }: Props) {
   const [mediaFiles, setMediaFiles] = useState<MediaFile[]>([]);
+  const [rejected, setRejected] = useState<RejectedFile[]>([]);
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Libera as prévias (object URLs) quando a tela fecha
+  const filesRef = useRef(mediaFiles);
+  filesRef.current = mediaFiles;
+  useEffect(() => () => filesRef.current.forEach((m) => URL.revokeObjectURL(m.preview)), []);
 
   const acceptTypes = () => {
     if (accept === 'image') return 'image/*';
@@ -37,53 +59,50 @@ export function MediaUpload({
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = Array.from(e.target.files || []);
-    
-    if (files.length + mediaFiles.length > maxFiles) {
-      alert(`Você pode adicionar no máximo ${maxFiles} arquivos`);
-      return;
+
+    // Arquivos inválidos são recusados um a um, sem descartar os válidos
+    const { valid, rejected: refused } = validateMediaFiles(files, {
+      accept,
+      maxImageSizeMB,
+      maxVideoSizeMB,
+      remainingSlots: Math.max(0, maxFiles - mediaFiles.length),
+    });
+    setRejected(refused);
+
+    if (valid.length > 0) {
+      // Object URL em vez de data URL: não carrega o vídeo inteiro na memória
+      const added: MediaFile[] = valid.map((file) => ({
+        id: `media-${nextMediaId++}`,
+        file,
+        preview: URL.createObjectURL(file),
+        type: mediaKindOf(file) === 'video' ? 'video' : 'image',
+      }));
+      const updated = [...mediaFiles, ...added];
+      setMediaFiles(updated);
+      onMediaChange(updated.map((m) => m.file));
     }
 
-    const newMediaFiles: MediaFile[] = [];
-
-    files.forEach((file) => {
-      const isImage = file.type.startsWith('image/');
-      const isVideo = file.type.startsWith('video/');
-
-      if ((accept === 'image' && !isImage) || (accept === 'video' && !isVideo)) {
-        return;
-      }
-
-      const reader = new FileReader();
-      reader.onload = (e) => {
-        const mediaFile: MediaFile = {
-          id: `${Date.now()}-${file.name}`,
-          file,
-          preview: e.target?.result as string,
-          type: isImage ? 'image' : 'video'
-        };
-        
-        newMediaFiles.push(mediaFile);
-        
-        if (newMediaFiles.length === files.length) {
-          const updated = [...mediaFiles, ...newMediaFiles];
-          setMediaFiles(updated);
-          onMediaChange(updated.map(m => m.file));
-        }
-      };
-      reader.readAsDataURL(file);
-    });
-
-    // Reset input
+    // Permite escolher o mesmo arquivo de novo
     if (fileInputRef.current) {
       fileInputRef.current.value = '';
     }
   };
 
   const removeMedia = (id: string) => {
+    const removed = mediaFiles.find((m) => m.id === id);
+    if (removed) URL.revokeObjectURL(removed.preview);
     const updated = mediaFiles.filter(m => m.id !== id);
     setMediaFiles(updated);
     onMediaChange(updated.map(m => m.file));
   };
+
+  const isFull = mediaFiles.length >= maxFiles;
+  const sizeHint =
+    accept === 'image'
+      ? `até ${maxImageSizeMB} MB`
+      : accept === 'video'
+        ? `até ${maxVideoSizeMB} MB`
+        : `fotos até ${maxImageSizeMB} MB, vídeos até ${maxVideoSizeMB} MB`;
 
   return (
     <div className={className}>
@@ -91,9 +110,9 @@ export function MediaUpload({
       <button
         type="button"
         onClick={() => fileInputRef.current?.click()}
-        disabled={mediaFiles.length >= maxFiles}
+        disabled={isFull || disabled}
         className={`w-full p-4 rounded-xl border-2 border-dashed transition-all ${
-          mediaFiles.length >= maxFiles
+          isFull || disabled
             ? 'border-white/10 bg-white/5 text-white/30 cursor-not-allowed'
             : 'border-blue-500/30 bg-blue-500/10 hover:bg-blue-500/20 hover:border-blue-500/50 text-blue-200'
         }`}
@@ -117,6 +136,7 @@ export function MediaUpload({
               {' · '}
               {mediaFiles.length}/{maxFiles}
             </p>
+            <p className="text-[11px] text-white/30 mt-0.5">{sizeHint}</p>
           </div>
         </div>
       </button>
@@ -129,6 +149,34 @@ export function MediaUpload({
         onChange={handleFileSelect}
         className="hidden"
       />
+
+      {rejected.length > 0 && (
+        <div
+          role="alert"
+          className="mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-400/30 text-amber-100 text-xs space-y-1"
+        >
+          <div className="flex items-start justify-between gap-2">
+            <p className="font-medium">
+              {rejected.length === 1 ? '1 arquivo não foi adicionado:' : `${rejected.length} arquivos não foram adicionados:`}
+            </p>
+            <button
+              type="button"
+              onClick={() => setRejected([])}
+              aria-label="Fechar aviso"
+              className="text-amber-200/80 hover:text-amber-100"
+            >
+              <X size={14} />
+            </button>
+          </div>
+          <ul className="space-y-0.5">
+            {rejected.map((r, i) => (
+              <li key={`${r.name}-${i}`} className="break-all">
+                {r.name}: {r.reason}
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
 
       {/* Media Preview Grid */}
       {preview && mediaFiles.length > 0 && (
@@ -146,7 +194,7 @@ export function MediaUpload({
                 {media.type === 'image' ? (
                   <img
                     src={media.preview}
-                    alt="Preview"
+                    alt={`Prévia de ${media.file.name}`}
                     className="w-full h-full object-cover"
                   />
                 ) : (
@@ -154,6 +202,8 @@ export function MediaUpload({
                     <video
                       src={media.preview}
                       className="w-full h-full object-cover"
+                      muted
+                      playsInline
                     />
                     <div className="absolute inset-0 flex items-center justify-center bg-black/30">
                       <div className="w-12 h-12 rounded-full bg-white/20 backdrop-blur-sm flex items-center justify-center">
@@ -167,7 +217,9 @@ export function MediaUpload({
                 <button
                   type="button"
                   onClick={() => removeMedia(media.id)}
-                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-red-500/80 hover:bg-red-500 text-white flex items-center justify-center transition-colors shadow-lg"
+                  disabled={disabled}
+                  aria-label={`Remover ${media.file.name}`}
+                  className="absolute top-2 right-2 w-7 h-7 rounded-full bg-red-500/80 hover:bg-red-500 text-white flex items-center justify-center transition-colors shadow-lg disabled:opacity-50"
                 >
                   <X size={16} />
                 </button>

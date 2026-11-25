@@ -17,6 +17,7 @@ import {
   ConnectedPublicProfile,
   ConnectedAcceptInvite,
   ConnectedPeople,
+  ConnectedCreatePost,
   ProtectedRoute
 } from "./app/ConnectedComponents";
 
@@ -42,6 +43,14 @@ export const router = createBrowserRouter([
             <ConnectedMemorialDetail />
           </ProtectedRoute>
         ) 
+      },
+      {
+        path: "memorial/:id/nova-publicacao",
+        element: (
+          <ProtectedRoute>
+            <ConnectedCreatePost />
+          </ProtectedRoute>
+        )
       },
       { 
         path: "create-memorial", 

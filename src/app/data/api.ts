@@ -1,4 +1,5 @@
 import { supabase } from '/utils/supabase/client';
+import { MAX_CAPTION_LENGTH, MAX_POST_MEDIA } from '../utils/mediaValidation';
 
 // ------------------------------------------------------------------
 // Mapeadores: linha do banco (snake_case) <-> objeto usado nas telas
@@ -62,17 +63,32 @@ function sanitizeFileName(name: string) {
  * pública para salvar no memorial/tributo.
  */
 export async function uploadMedia(file: File, subfolder: string): Promise<string> {
+  return (await uploadMediaWithPath(file, subfolder)).url;
+}
+
+/** Igual a uploadMedia, mas devolve também o caminho no bucket (para poder apagar depois). */
+async function uploadMediaWithPath(file: File, subfolder: string): Promise<{ url: string; path: string }> {
   const userId = await requireUserId();
-  const path = `${userId}/${subfolder}/${Date.now()}-${sanitizeFileName(file.name)}`;
+  const random = Math.random().toString(36).slice(2, 8);
+  const path = `${userId}/${subfolder}/${Date.now()}-${random}-${sanitizeFileName(file.name)}`;
 
   const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, file, {
     cacheControl: '3600',
     upsert: false,
+    contentType: file.type || undefined,
   });
   if (error) throw error;
 
   const { data } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+  return { url: data.publicUrl, path };
+}
+
+/** Caminho no bucket a partir da URL pública (null se a URL não for do nosso bucket). */
+export function storagePathFromPublicUrl(url: string): string | null {
+  const marker = `/storage/v1/object/public/${MEDIA_BUCKET}/`;
+  const i = url.indexOf(marker);
+  if (i === -1) return null;
+  return decodeURIComponent(url.slice(i + marker.length).split('?')[0]);
 }
 
 /** Envia vários arquivos (galeria) em paralelo e devolve URL + tipo de cada um. */
@@ -172,6 +188,120 @@ export async function createTribute(input: any) {
 
   if (error) throw error;
   return mapTributeFromDb(data);
+}
+
+// ------------------------------------------------------------------
+// Publicações com foto/vídeo e legenda (tabela memorial_posts — migration 0007)
+// ------------------------------------------------------------------
+
+export type PostMediaItem = { url: string; type: 'image' | 'video' };
+
+export type MemorialPost = {
+  id: string;
+  memorialId: string;
+  authorId: string;
+  authorName: string;
+  caption: string;
+  media: PostMediaItem[];
+  createdAt: string;
+};
+
+function mapPostFromDb(row: any, authorName: string): MemorialPost {
+  const media = Array.isArray(row.media) ? row.media : [];
+  return {
+    id: row.id,
+    memorialId: row.memorial_id,
+    authorId: row.author_id,
+    authorName,
+    caption: row.caption || '',
+    media: media
+      .filter((m: any) => m && typeof m.url === 'string')
+      .map((m: any) => ({ url: m.url, type: m.type === 'video' ? 'video' : 'image' })),
+    createdAt: row.created_at,
+  };
+}
+
+const POST_COLUMNS = 'id, memorial_id, author_id, caption, media, created_at';
+
+/** Publicações desses memoriais, da mais recente para a mais antiga (a RLS esconde as de memoriais privados). */
+export async function fetchMemorialPosts(memorialIds: string[]): Promise<MemorialPost[]> {
+  if (memorialIds.length === 0) return [];
+  const rows: any[] = [];
+  for (const ids of chunk(memorialIds, 100)) {
+    const { data, error } = await supabase
+      .from('memorial_posts')
+      .select(POST_COLUMNS)
+      .in('memorial_id', ids)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  rows.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  const names = await fetchProfilesByIds(Array.from(new Set(rows.map((r) => r.author_id))));
+  return rows.map((row) => mapPostFromDb(row, names[row.author_id] || 'Usuário'));
+}
+
+/**
+ * Cria uma publicação: envia os arquivos para o Storage e depois salva a linha.
+ * Se salvar falhar, apaga os arquivos já enviados para não deixar lixo.
+ * Os arquivos devem ter sido validados antes (validateMediaFiles).
+ */
+export async function createMemorialPost(input: {
+  memorialId: string;
+  caption: string;
+  files: File[];
+  authorName: string;
+}): Promise<MemorialPost> {
+  const userId = await requireUserId();
+  const caption = input.caption.trim();
+  if (input.files.length === 0) throw new Error('Escolha pelo menos uma foto ou vídeo.');
+  if (input.files.length > MAX_POST_MEDIA) {
+    throw new Error(`Uma publicação pode ter no máximo ${MAX_POST_MEDIA} arquivos.`);
+  }
+  if (caption.length > MAX_CAPTION_LENGTH) {
+    throw new Error(`A legenda pode ter no máximo ${MAX_CAPTION_LENGTH} caracteres.`);
+  }
+
+  const uploadedPaths: string[] = [];
+  try {
+    const media: PostMediaItem[] = [];
+    for (const file of input.files) {
+      const { url, path } = await uploadMediaWithPath(file, `posts/${input.memorialId}`);
+      uploadedPaths.push(path);
+      media.push({ url, type: file.type.startsWith('video/') ? 'video' : 'image' });
+    }
+
+    const { data, error } = await supabase
+      .from('memorial_posts')
+      .insert({
+        memorial_id: input.memorialId,
+        author_id: userId,
+        caption: caption || null,
+        media,
+      })
+      .select(POST_COLUMNS)
+      .single();
+    if (error) throw error;
+    return mapPostFromDb(data, input.authorName);
+  } catch (err) {
+    if (uploadedPaths.length > 0) {
+      await supabase.storage.from(MEDIA_BUCKET).remove(uploadedPaths).catch(() => undefined);
+    }
+    throw err;
+  }
+}
+
+export async function deleteMemorialPost(post: Pick<MemorialPost, 'id' | 'media'>) {
+  // .select() devolve as linhas apagadas: se a RLS bloquear, volta vazio (sem erro)
+  const { data, error } = await supabase.from('memorial_posts').delete().eq('id', post.id).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) throw new Error('Você não tem permissão para apagar esta publicação.');
+  // Tenta apagar os arquivos também. A policy do Storage só deixa apagar os da
+  // própria pasta; se quem apagou foi o dono do memorial, os arquivos ficam.
+  const paths = post.media.map((m) => storagePathFromPublicUrl(m.url)).filter((p): p is string => !!p);
+  if (paths.length > 0) {
+    await supabase.storage.from(MEDIA_BUCKET).remove(paths).catch(() => undefined);
+  }
 }
 
 // ------------------------------------------------------------------

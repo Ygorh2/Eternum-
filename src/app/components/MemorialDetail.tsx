@@ -1,11 +1,22 @@
 import React, { useState } from 'react';
 import { formatDate, parseLocalDate } from '../utils/dateUtils';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus } from 'lucide-react';
-import type { PostInteractions, ReactionType } from '../data/api';
+import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus, ImagePlus, Trash2 } from 'lucide-react';
+import type { MemorialPost, PostInteractions, PostMediaItem, ReactionType } from '../data/api';
 import { getReactions } from '../utils/postInteractions';
-import { galleryPostKey, tributePostKey } from '../utils/postKeys';
+import { galleryPostKey, memorialPostItemKey, tributePostKey } from '../utils/postKeys';
 import { PostComments } from './PostComments';
+import { PostMediaCarousel } from './PostMediaCarousel';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog';
 
 interface Props {
   memorial: any;
@@ -14,6 +25,12 @@ interface Props {
   onViewLivingMemory: () => void;
   onWriteTribute: () => void;
   onViewProfile?: (userId: string) => void;
+  // Publicações com foto/vídeo e legenda
+  posts?: MemorialPost[];
+  postsError?: string | null;
+  currentUserId?: string;
+  onCreatePost?: () => void;
+  onDeletePost?: (postId: string) => void;
   // Reações e comentários (salvos no Supabase)
   interactions?: PostInteractions;
   canInteract?: boolean;
@@ -46,9 +63,14 @@ interface TributePost {
     type: 'photo' | 'video';
     url: string;
   };
+  /** Publicação com uma ou várias fotos/vídeos (carrossel). */
+  mediaList?: PostMediaItem[];
+  /** Id da publicação (memorial_posts) quando pode ser apagada pelo usuário atual. */
+  deletablePostId?: string;
 }
 
 const NO_INTERACTIONS: PostInteractions = { reactions: {}, comments: {} };
+const NO_POSTS: MemorialPost[] = [];
 
 export function MemorialDetail({
   memorial,
@@ -57,6 +79,11 @@ export function MemorialDetail({
   onViewLivingMemory,
   onWriteTribute,
   onViewProfile,
+  posts = NO_POSTS,
+  postsError,
+  currentUserId,
+  onCreatePost,
+  onDeletePost,
   interactions = NO_INTERACTIONS,
   canInteract = false,
   interactionError,
@@ -73,7 +100,9 @@ export function MemorialDetail({
   const [activeTab, setActiveTab] = useState<'tributes' | 'living-memory' | 'about'>('tributes');
   const isFollowing = follow.isFollowing;
   const followersCount = follow.count;
-  const notice = interactionError || candleError || followError;
+  const notice = interactionError || candleError || followError || postsError;
+  const [postToDelete, setPostToDelete] = useState<string | null>(null);
+  const isMemorialOwner = !!currentUserId && memorial.createdBy === currentUserId;
 
   // Transform tributes into Instagram-style posts
   const tributePosts: TributePost[] = tributes.map((tribute, index) => ({
@@ -97,8 +126,20 @@ export function MemorialDetail({
     media: { type: item.type === 'video' ? ('video' as const) : ('photo' as const), url: item.url },
   }));
 
-  // Posts da galeria + homenagens, do mais recente para o mais antigo
-  const allPosts: TributePost[] = [...galleryPosts, ...tributePosts].sort(
+  // Publicações com foto/vídeo e legenda
+  const mediaPosts: TributePost[] = posts.map((p) => ({
+    id: `post-${p.id}`,
+    postKey: memorialPostItemKey(p.id),
+    author: { id: p.authorId, name: p.authorName },
+    content: p.caption,
+    date: p.createdAt,
+    mediaList: p.media,
+    deletablePostId:
+      onDeletePost && currentUserId && (p.authorId === currentUserId || isMemorialOwner) ? p.id : undefined,
+  }));
+
+  // Publicações + galeria + homenagens, do mais recente para o mais antigo
+  const allPosts: TributePost[] = [...mediaPosts, ...galleryPosts, ...tributePosts].sort(
     (a, b) => (parseLocalDate(b.date)?.getTime() ?? 0) - (parseLocalDate(a.date)?.getTime() ?? 0)
   );
 
@@ -273,13 +314,24 @@ export function MemorialDetail({
               exit={{ opacity: 0, y: -10 }}
               className="space-y-5"
             >
-               <button 
-                 onClick={onWriteTribute}
-                 className="w-full py-4 border-2 border-dashed border-white/20 rounded-2xl text-white/50 flex items-center justify-center gap-2 hover:bg-white/5 hover:border-white/30 transition-all"
-               >
-                 <BookOpen size={18} />
-                 Escrever uma homenagem
-               </button>
+               <div className={`grid gap-3 ${onCreatePost ? 'grid-cols-2' : 'grid-cols-1'}`}>
+                 {onCreatePost && (
+                   <button
+                     onClick={onCreatePost}
+                     className="py-4 px-2 border-2 border-dashed border-blue-400/30 rounded-2xl text-blue-200/80 text-sm flex items-center justify-center gap-2 hover:bg-white/5 hover:border-blue-400/50 transition-all"
+                   >
+                     <ImagePlus size={18} />
+                     Publicar foto
+                   </button>
+                 )}
+                 <button 
+                   onClick={onWriteTribute}
+                   className="py-4 px-2 border-2 border-dashed border-white/20 rounded-2xl text-white/50 text-sm flex items-center justify-center gap-2 hover:bg-white/5 hover:border-white/30 transition-all"
+                 >
+                   <BookOpen size={18} />
+                   {onCreatePost ? 'Homenagem' : 'Escrever uma homenagem'}
+                 </button>
+               </div>
 
                {allPosts.map((post) => {
                  const reactions = getReactions(interactions, post.postKey);
@@ -302,10 +354,27 @@ export function MemorialDetail({
                          <p className="text-xs text-white/50">{formatDate(post.date)}</p>
                        </div>
                      </div>
-                     <button className="p-2 text-white/40 hover:text-white/60 transition-colors">
-                       <MoreVertical size={18} />
-                     </button>
+                     {post.deletablePostId ? (
+                       <button
+                         onClick={() => setPostToDelete(post.deletablePostId!)}
+                         aria-label="Apagar publicação"
+                         className="p-2 text-white/40 hover:text-red-300 transition-colors"
+                       >
+                         <Trash2 size={18} />
+                       </button>
+                     ) : (
+                       <button className="p-2 text-white/40 hover:text-white/60 transition-colors">
+                         <MoreVertical size={18} />
+                       </button>
+                     )}
                    </div>
+
+                   {post.mediaList && (
+                     <PostMediaCarousel
+                       media={post.mediaList}
+                       alt={post.content ? post.content.slice(0, 120) : `Publicação em memória de ${memorial.name}`}
+                     />
+                   )}
 
                    {/* Post Media (if exists) */}
                    {post.media && (
@@ -379,7 +448,11 @@ export function MemorialDetail({
                        ) : (
                          <span className="font-medium text-white">{post.author.name}</span>
                        )}{' '}
-                       <span className="italic">"{post.content}"</span>
+                       {post.mediaList ? (
+                         <span className="whitespace-pre-line">{post.content}</span>
+                       ) : (
+                         <span className="italic">"{post.content}"</span>
+                       )}
                      </p>
                      )}
 
@@ -491,6 +564,29 @@ export function MemorialDetail({
           )}
         </AnimatePresence>
       </div>
+
+      <AlertDialog open={!!postToDelete} onOpenChange={(open) => !open && setPostToDelete(null)}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Apagar publicação?</AlertDialogTitle>
+            <AlertDialogDescription>
+              As fotos, a legenda, as reações e os comentários desta publicação deixarão de aparecer. Isso não pode ser desfeito.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancelar</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={() => {
+                if (postToDelete) onDeletePost?.(postToDelete);
+                setPostToDelete(null);
+              }}
+              className="bg-red-600 hover:bg-red-700"
+            >
+              Apagar
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

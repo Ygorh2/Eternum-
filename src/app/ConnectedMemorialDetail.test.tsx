@@ -7,6 +7,7 @@ vi.mock('./data/api', () => ({
   fetchPostInteractions: vi.fn().mockResolvedValue({ reactions: {}, comments: {} }),
   fetchCandleInfo: vi.fn().mockResolvedValue({ count: 0, litByMe: false }),
   fetchMemorialFollowInfo: vi.fn().mockResolvedValue({ count: 0, isFollowing: false }),
+  fetchMemorialPosts: vi.fn().mockResolvedValue([]),
 }))
 
 let appContext: any

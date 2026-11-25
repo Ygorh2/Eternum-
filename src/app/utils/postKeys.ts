@@ -18,3 +18,8 @@ export function tributePostKey(tributeId: string) {
 export function tributeIdFromPostKey(postKey: string): string | null {
   return postKey.startsWith('tribute:') ? postKey.slice('tribute:'.length) : null;
 }
+
+/** Publicação com foto/vídeo e legenda (tabela memorial_posts). */
+export function memorialPostItemKey(postId: string) {
+  return `post:${postId}`;
+}

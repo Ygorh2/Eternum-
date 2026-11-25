@@ -3,14 +3,17 @@ import { getYear } from '../utils/dateUtils';
 import { motion } from 'motion/react';
 import { Plus, Search, Menu, User, Heart, MessageCircle, Send, MoreVertical, Star } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
-import type { PostInteractions, ReactionType } from '../data/api';
+import type { MemorialPost, PostInteractions, PostMediaItem, ReactionType } from '../data/api';
 import { getReactions } from '../utils/postInteractions';
-import { galleryPostKey, memorialPostKey, tributePostKey } from '../utils/postKeys';
+import { galleryPostKey, memorialPostItemKey, memorialPostKey, tributePostKey } from '../utils/postKeys';
 import { PostComments } from './PostComments';
+import { PostMediaCarousel } from './PostMediaCarousel';
 
 interface Props {
   memorials: any[];
   tributes: any[];
+  /** Publicações com foto/vídeo e legenda (memorial_posts). */
+  posts?: MemorialPost[];
   onSelectMemorial: (id: string) => void;
   onCreate: (type?: 'person' | 'pet') => void;
   onProfile: () => void;
@@ -28,7 +31,7 @@ interface Post {
   id: string;
   /** Chave usada para salvar reações/comentários (igual à da página do memorial). */
   postKey: string;
-  sourceType: 'memorial_created' | 'gallery_image' | 'tribute';
+  sourceType: 'memorial_created' | 'gallery_image' | 'tribute' | 'memorial_post';
   memorial: {
     id: string;
     name: string;
@@ -40,6 +43,8 @@ interface Post {
     video?: string;
     videoType?: string;
     message?: string;
+    /** Várias fotos/vídeos (carrossel) — publicações. */
+    media?: PostMediaItem[];
   };
   author: {
     name: string;
@@ -63,10 +68,12 @@ function formatRelativeDate(isoDate: string): string {
 }
 
 const NO_INTERACTIONS: PostInteractions = { reactions: {}, comments: {} };
+const NO_POSTS: MemorialPost[] = [];
 
 export function Feed({
   memorials,
   tributes,
+  posts: memorialPosts = NO_POSTS,
   onSelectMemorial,
   onCreate,
   onProfile,
@@ -168,9 +175,32 @@ export function Feed({
       });
     }
 
+    // 4. Cada publicação com foto/vídeo e legenda gera um post
+    for (const item of memorialPosts) {
+      const memorial = memorials.find((m: any) => m.id === item.memorialId);
+      if (!memorial) continue;
+      posts.push({
+        id: `post-${item.id}`,
+        postKey: memorialPostItemKey(item.id),
+        sourceType: 'memorial_post',
+        memorial: {
+          id: memorial.id,
+          name: memorial.name,
+          photo: memorial.photo || '',
+          type: memorial.type || 'person',
+        },
+        content: {
+          media: item.media,
+          message: item.caption || undefined,
+        },
+        author: { name: item.authorName },
+        createdAt: item.createdAt,
+      });
+    }
+
     // Ordenar do mais recente para o mais antigo
     return posts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
-  }, [memorials, tributes, user, userMetadata, creatorNames]);
+  }, [memorials, tributes, memorialPosts, user, userMetadata, creatorNames]);
 
   const handleReaction = (post: Post, type: ReactionType) => {
     onToggleReaction?.(post.memorial.id, post.postKey, type);
@@ -398,6 +428,14 @@ export function Feed({
                       <MoreVertical size={18} />
                     </button>
                   </div>
+
+                  {/* Publicação com uma ou várias fotos/vídeos */}
+                  {post.content.media && (
+                    <PostMediaCarousel
+                      media={post.content.media}
+                      alt={post.content.message ? post.content.message.slice(0, 120) : `Publicação em memória de ${post.memorial.name}`}
+                    />
+                  )}
 
                   {/* Post Image */}
                   {post.content.image && (
