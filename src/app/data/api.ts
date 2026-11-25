@@ -210,7 +210,7 @@ export async function fetchCandleInfo(memorialId: string, userId?: string) {
 }
 
 // ------------------------------------------------------------------
-// Seguir memorial (tabela memorial_follows — migration 0005)
+// Seguir memorial (tabela memorial_follows — migration 0006)
 // ------------------------------------------------------------------
 
 export async function fetchMemorialFollowInfo(memorialId: string, userId?: string) {
@@ -249,7 +249,7 @@ export async function unfollowMemorial(memorialId: string) {
 }
 
 // ------------------------------------------------------------------
-// Reações e comentários dos posts (migration 0005)
+// Reações e comentários dos posts (migration 0006)
 // ------------------------------------------------------------------
 
 export type ReactionType = 'amen' | 'love';

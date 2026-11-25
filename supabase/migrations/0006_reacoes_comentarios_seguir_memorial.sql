@@ -1,12 +1,15 @@
--- Etapa 8: reações, comentários e "seguir memorial" salvos de verdade
--- Rode este arquivo inteiro no SQL Editor do Supabase, depois das anteriores.
+-- Etapa 9: reações, comentários e "seguir memorial" salvos de verdade
+-- Rode este arquivo inteiro no SQL Editor do Supabase, depois das anteriores
+-- (inclusive a 0005_private_memorials.sql, se ela já tiver sido aplicada).
 -- É idempotente: pode rodar de novo sem quebrar nada.
 --
 -- As velas NÃO precisam de migration: a tabela public.candles já existe (0001).
 --
 -- Leitura: as policies de SELECT abaixo não usam "using (true)". Elas só deixam
--- ler a linha se a pessoa consegue ler o memorial dela. Assim, quando o memorial
--- ficar privado (RLS de memorials), as reações/comentários dele também ficam.
+-- ler a linha se a pessoa consegue ler o memorial dela. O subselect em
+-- public.memorials passa pela RLS de memorials, então segue exatamente a regra
+-- de privacidade da 0005 (can_view_memorial_row). Funciona também se a 0005
+-- ainda não tiver sido aplicada.
 
 -- ============================================================
 -- POST_REACTIONS (🙏 Amém e ❤️ Amor em cada post)
