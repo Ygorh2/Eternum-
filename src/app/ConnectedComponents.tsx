@@ -620,9 +620,15 @@ function useIsAppAdmin(user: any): boolean | null {
     }
     let cancelled = false;
     setIsAdmin(null);
-    api.isAppAdmin().then((v) => {
-      if (!cancelled) setIsAdmin(v);
-    });
+    api
+      .isAppAdmin()
+      .then((v) => {
+        if (!cancelled) setIsAdmin(v);
+      })
+      .catch((err) => {
+        console.error('Erro ao conferir administrador:', err);
+        if (!cancelled) setIsAdmin(false);
+      });
     return () => {
       cancelled = true;
     };
@@ -635,12 +641,15 @@ export function ConnectedBlockedUsers() {
   const navigate = useNavigate();
   const userId = !user || user.isGuest ? undefined : user.id;
   const [users, setUsers] = useState<BlockedUser[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [loading, setLoading] = useState(!!userId);
   const [error, setError] = useState<string | null>(null);
   const [unblockingId, setUnblockingId] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!userId) return;
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     api
