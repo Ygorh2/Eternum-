@@ -1,6 +1,14 @@
 import { supabase } from '/utils/supabase/client';
 import type { FeedQuery, FollowingScope } from '../utils/feed';
 import { MAX_CAPTION_LENGTH, MAX_POST_MEDIA } from '../utils/mediaValidation';
+import {
+  MEDIA_BUCKET,
+  SIGNED_URL_TTL_SECONDS,
+  getCachedSignedUrl,
+  mediaPathFromUrl,
+  setCachedSignedUrl,
+  toStoredMediaUrl,
+} from '../utils/mediaUrls';
 
 // ------------------------------------------------------------------
 // Mapeadores: linha do banco (snake_case) <-> objeto usado nas telas
@@ -52,8 +60,6 @@ async function requireUserId(): Promise<string> {
 // Upload de mídia (Supabase Storage)
 // ------------------------------------------------------------------
 
-const MEDIA_BUCKET = 'memorial-media';
-
 function sanitizeFileName(name: string) {
   return name.replace(/[^a-zA-Z0-9.\-_]/g, '_');
 }
@@ -84,12 +90,126 @@ async function uploadMediaWithPath(file: File, subfolder: string): Promise<{ url
   return { url: data.publicUrl, path };
 }
 
-/** Caminho no bucket a partir da URL pública (null se a URL não for do nosso bucket). */
+/** Caminho no bucket a partir da URL pública ou assinada (null se a URL não for do nosso bucket). */
 export function storagePathFromPublicUrl(url: string): string | null {
-  const marker = `/storage/v1/object/public/${MEDIA_BUCKET}/`;
-  const i = url.indexOf(marker);
-  if (i === -1) return null;
-  return decodeURIComponent(url.slice(i + marker.length).split('?')[0]);
+  return mediaPathFromUrl(url);
+}
+
+/** Link público "estável" de um caminho do bucket (é o formato guardado no banco). */
+function publicMediaUrl(path: string): string {
+  return supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path).data.publicUrl;
+}
+
+/** Garante que o banco receba o link estável, nunca um link temporário. */
+function storedUrl<T extends string | null | undefined>(url: T): T {
+  return toStoredMediaUrl(url, publicMediaUrl) as T;
+}
+
+// ------------------------------------------------------------------
+// Links temporários (assinados) para MOSTRAR fotos e vídeos
+//
+// Com o bucket privado (migration 0012 + bucket marcado como privado no
+// painel), o link público não abre mais o arquivo. Aqui pedimos ao Supabase
+// um link temporário para cada arquivo; ele só entrega para quem pode ver o
+// memorial. Arquivos sem permissão (ou se algo der errado) ficam com o link
+// original — enquanto o bucket ainda for público, ele continua funcionando.
+// ------------------------------------------------------------------
+
+/** Quantos caminhos pedir por chamada. */
+const SIGN_CHUNK = 100;
+
+async function currentViewerKey(): Promise<string> {
+  try {
+    const { data } = await supabase.auth.getSession();
+    return data.session?.user?.id || 'anon';
+  } catch {
+    return 'anon';
+  }
+}
+
+/** Mapa link guardado -> link para exibir. */
+async function signMediaUrls(urls: (string | null | undefined)[]): Promise<Map<string, string>> {
+  const result = new Map<string, string>();
+  const byPath = new Map<string, string[]>();
+  for (const url of urls) {
+    if (!url || result.has(url)) continue;
+    const path = mediaPathFromUrl(url);
+    if (!path) continue;
+    result.set(url, url);
+    const list = byPath.get(path) || [];
+    list.push(url);
+    byPath.set(path, list);
+  }
+  if (byPath.size === 0) return result;
+
+  const viewer = await currentViewerKey();
+  const missing: string[] = [];
+  for (const [path, list] of byPath) {
+    const cached = getCachedSignedUrl(viewer, path);
+    if (cached) list.forEach((u) => result.set(u, cached));
+    else missing.push(path);
+  }
+
+  for (const paths of chunk(missing, SIGN_CHUNK)) {
+    try {
+      const { data, error } = await supabase.storage
+        .from(MEDIA_BUCKET)
+        .createSignedUrls(paths, SIGNED_URL_TTL_SECONDS);
+      if (error) throw error;
+      for (const item of data || []) {
+        if (!item?.path || !item.signedUrl || item.error) continue;
+        setCachedSignedUrl(viewer, item.path, item.signedUrl);
+        (byPath.get(item.path) || []).forEach((u) => result.set(u, item.signedUrl as string));
+      }
+    } catch (err) {
+      console.warn('Não foi possível gerar links temporários das fotos:', err);
+    }
+  }
+  return result;
+}
+
+const pick = (links: Map<string, string>, url: any) =>
+  typeof url === 'string' && url ? links.get(url) ?? url : url;
+
+function mediaUrlsOfMemorial(m: any): string[] {
+  return [m?.photo, m?.cover, ...((m?.gallery || []) as any[]).map((g) => (typeof g === 'string' ? g : g?.url))];
+}
+
+function applyLinksToMemorial<T extends Record<string, any>>(m: T, links: Map<string, string>): T {
+  if (!m) return m;
+  const out: Record<string, any> = { ...m };
+  if ('photo' in m) out.photo = pick(links, m.photo);
+  if ('cover' in m) out.cover = pick(links, m.cover);
+  if (Array.isArray(m.gallery)) {
+    out.gallery = m.gallery.map((g: any) =>
+      typeof g === 'string' ? pick(links, g) : g && typeof g === 'object' ? { ...g, url: pick(links, g.url) } : g
+    );
+  }
+  return out as T;
+}
+
+/** Troca os links de foto/capa/galeria dos memoriais por links temporários. */
+async function withSignedMemorials<T extends Record<string, any>>(memorials: T[]): Promise<T[]> {
+  const links = await signMediaUrls(memorials.flatMap(mediaUrlsOfMemorial));
+  return memorials.map((m) => applyLinksToMemorial(m, links));
+}
+
+/** Itens do feed/homenagens/publicações: image, media[] e memorial.photo. */
+async function withSignedItems<T extends Record<string, any>>(items: T[]): Promise<T[]> {
+  const links = await signMediaUrls(
+    items.flatMap((it) => [
+      it?.image,
+      ...((Array.isArray(it?.media) ? it.media : []) as any[]).map((m) => m?.url),
+      ...(it?.memorial ? mediaUrlsOfMemorial(it.memorial) : []),
+    ])
+  );
+  return items.map((it) => {
+    const out: Record<string, any> = { ...it };
+    if ('image' in it) out.image = pick(links, it.image);
+    if (Array.isArray(it.media)) out.media = it.media.map((m: any) => ({ ...m, url: pick(links, m?.url) }));
+    if (it.memorial) out.memorial = applyLinksToMemorial(it.memorial, links);
+    return out as T;
+  });
 }
 
 /** Envia vários arquivos (galeria) em paralelo e devolve URL + tipo de cada um. */
@@ -116,7 +236,7 @@ export async function fetchMemorials() {
     .order('created_at', { ascending: false });
 
   if (error) throw error;
-  return (data || []).map(mapMemorialFromDb);
+  return withSignedMemorials((data || []).map(mapMemorialFromDb));
 }
 
 export async function createMemorial(input: any) {
@@ -131,8 +251,8 @@ export async function createMemorial(input: any) {
     .insert({
       name: input.name,
       type: input.type,
-      photo: input.photo || null,
-      cover: input.cover || null,
+      photo: storedUrl(input.photo) || null,
+      cover: storedUrl(input.cover) || null,
       birth_date: input.birthDate || null,
       death_date: input.deathDate || null,
       quote: input.quote || null,
@@ -143,13 +263,16 @@ export async function createMemorial(input: any) {
       lat: input.lat ?? null,
       lng: input.lng ?? null,
       created_by: userId,
-      gallery: input.gallery || [],
+      gallery: (input.gallery || []).map((g: any) =>
+        typeof g === 'string' ? storedUrl(g) : g && typeof g === 'object' ? { ...g, url: storedUrl(g.url) } : g
+      ),
     })
     .select()
     .single();
 
   if (error) throw error;
-  return mapMemorialFromDb(data);
+  const [memorial] = await withSignedMemorials([mapMemorialFromDb(data)]);
+  return memorial;
 }
 
 /**
@@ -167,8 +290,8 @@ export async function updateMemorial(id: string, changes: any) {
   if (changes.deathDate !== undefined) row.death_date = changes.deathDate || null;
   if (changes.bio !== undefined) row.bio = changes.bio || null;
   if (changes.quote !== undefined) row.quote = changes.quote || null;
-  if (changes.photo !== undefined) row.photo = changes.photo || null;
-  if (changes.cover !== undefined) row.cover = changes.cover || null;
+  if (changes.photo !== undefined) row.photo = storedUrl(changes.photo) || null;
+  if (changes.cover !== undefined) row.cover = storedUrl(changes.cover) || null;
   if (changes.accessGroup !== undefined) row.access_group = changes.accessGroup;
   if (changes.addToSky !== undefined) row.add_to_sky = !!changes.addToSky;
 
@@ -182,7 +305,8 @@ export async function updateMemorial(id: string, changes: any) {
 
   if (error) throw error;
   if (!data) throw new Error('Você não tem permissão para editar este memorial.');
-  return mapMemorialFromDb(data);
+  const [memorial] = await withSignedMemorials([mapMemorialFromDb(data)]);
+  return memorial;
 }
 
 export async function deleteMemorial(id: string) {
@@ -201,7 +325,7 @@ export async function fetchTributes() {
     .order('created_at', { ascending: false });
 
   if (error) throw error;
-  return (data || []).map(mapTributeFromDb);
+  return withSignedItems((data || []).map(mapTributeFromDb));
 }
 
 export async function createTribute(input: any) {
@@ -215,13 +339,14 @@ export async function createTribute(input: any) {
       author_name: input.author?.name || null,
       content: input.content,
       type: input.type || 'Saudade',
-      image: input.image || null,
+      image: storedUrl(input.image) || null,
     })
     .select()
     .single();
 
   if (error) throw error;
-  return mapTributeFromDb(data);
+  const [tribute] = await withSignedItems([mapTributeFromDb(data)]);
+  return tribute;
 }
 
 // ------------------------------------------------------------------
@@ -303,7 +428,7 @@ export async function fetchFeedMemorialsPage(q: FeedQuery) {
     if (error) throw error;
     rows = data || [];
   }
-  return rows.map(mapMemorialFromDb);
+  return withSignedMemorials(rows.map(mapMemorialFromDb));
 }
 
 /** Homenagens com os dados do memorial embutidos (para o cabeçalho do post). */
@@ -345,7 +470,7 @@ export async function fetchFeedTributesPage(q: FeedQuery) {
     rows = data || [];
   }
 
-  return rows.map((row: any) => ({
+  return withSignedItems(rows.map((row: any) => ({
     ...mapTributeFromDb(row),
     createdAt: row.created_at,
     memorial: {
@@ -355,7 +480,7 @@ export async function fetchFeedTributesPage(q: FeedQuery) {
       type: row.memorial?.type === 'pet' ? ('pet' as const) : ('person' as const),
       createdBy: row.memorial?.created_by,
     },
-  }));
+  })));
 }
 
 // ------------------------------------------------------------------
@@ -406,7 +531,7 @@ export async function fetchMemorialPosts(memorialIds: string[]): Promise<Memoria
   }
   rows.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
   const names = await fetchProfilesByIds(Array.from(new Set(rows.map((r) => r.author_id))));
-  return rows.map((row) => mapPostFromDb(row, names[row.author_id] || 'Usuário'));
+  return withSignedItems(rows.map((row) => mapPostFromDb(row, names[row.author_id] || 'Usuário')));
 }
 
 /**
@@ -450,7 +575,8 @@ export async function createMemorialPost(input: {
       .select(POST_COLUMNS)
       .single();
     if (error) throw error;
-    return mapPostFromDb(data, input.authorName);
+    const [post] = await withSignedItems([mapPostFromDb(data, input.authorName)]);
+    return post;
   } catch (err) {
     if (uploadedPaths.length > 0) {
       await supabase.storage.from(MEDIA_BUCKET).remove(uploadedPaths).catch(() => undefined);
@@ -530,7 +656,7 @@ export async function fetchFeedMemorialPostsPage(q: FeedQuery) {
     rows = data || [];
   }
 
-  return rows.map((row: any) => ({
+  return withSignedItems(rows.map((row: any) => ({
     // o nome do autor é preenchido no feed (busca de perfis em lote)
     ...mapPostFromDb(row, ''),
     memorial: {
@@ -540,7 +666,7 @@ export async function fetchFeedMemorialPostsPage(q: FeedQuery) {
       type: row.memorial?.type === 'pet' ? ('pet' as const) : ('person' as const),
       createdBy: row.memorial?.created_by,
     },
-  }));
+  })));
 }
 
 // ------------------------------------------------------------------
