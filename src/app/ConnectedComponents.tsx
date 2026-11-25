@@ -487,8 +487,22 @@ export function ConnectedMyMemorials() {
 }
 
 export function ConnectedPets() {
-  const { setIsMenuOpen } = useApp();
-  return <Pets onOpenMenu={() => setIsMenuOpen(true)} />;
+  const { memorials, user, memorialsLoading, setIsMenuOpen } = useApp();
+  const navigate = useNavigate();
+
+  // Só os memoriais de pet criados pelo próprio usuário
+  const myPets = memorials.filter((m) => m.type === 'pet' && m.createdBy === user?.id);
+
+  return (
+    <Pets
+      pets={myPets}
+      loading={memorialsLoading}
+      onOpenMenu={() => setIsMenuOpen(true)}
+      onCreate={() => navigate('/create-memorial?type=pet')}
+      onOpen={(id) => navigate(`/memorial/${id}`)}
+      onEdit={(id) => navigate(`/memorial/${id}/edit`)}
+    />
+  );
 }
 
 export function ConnectedInvites() {
