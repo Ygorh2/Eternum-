@@ -1,8 +1,12 @@
-import React, { useState } from 'react';
+import React, { useEffect, useState } from 'react';
 import { motion } from 'motion/react';
-import { Mail, Lock, Eye, EyeOff, User, AtSign, Calendar } from 'lucide-react';
+import { Mail, MailCheck, Lock, Eye, EyeOff, User, AtSign, Calendar } from 'lucide-react';
 import { supabase } from '/utils/supabase/client';
-import { projectId, publicAnonKey } from '/utils/supabase/info';
+import { resendSignupConfirmation, signUpWithEmail } from '../data/api';
+import { authRedirectUrl, parseAuthRedirectError, signupErrorMessage } from '../utils/authRedirect';
+
+/** Tempo mínimo entre dois reenvios do e-mail de confirmação. */
+export const RESEND_COOLDOWN_SECONDS = 60;
 
 interface Props {
   onLogin: (method: 'email' | 'google' | 'guest') => void;
@@ -19,7 +23,27 @@ export function Auth({ onLogin }: Props) {
   const [birthDate, setBirthDate] = useState('');
   const [rememberMe, setRememberMe] = useState(false);
   const [error, setError] = useState('');
-  const [mode, setMode] = useState<'login' | 'signup' | 'forgot'>('login');
+  const [mode, setMode] = useState<'login' | 'signup' | 'forgot' | 'check-email'>('login');
+  const [notice, setNotice] = useState('');
+  const [emailNotConfirmed, setEmailNotConfirmed] = useState(false);
+  const [resendCooldown, setResendCooldown] = useState(0);
+
+  // Voltou do link do e-mail com erro (ex.: link expirado)? Mostra o aviso.
+  useEffect(() => {
+    const redirectError = parseAuthRedirectError(window.location.search, window.location.hash);
+    if (redirectError) {
+      setError(redirectError);
+      setEmailNotConfirmed(true);
+      window.history.replaceState(null, '', window.location.pathname);
+    }
+  }, []);
+
+  // Contagem regressiva do botão "Reenviar e-mail".
+  useEffect(() => {
+    if (resendCooldown <= 0) return;
+    const timer = setTimeout(() => setResendCooldown((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+  }, [resendCooldown]);
 
   const handleGoogleLogin = async () => {
     setLoading(true);
@@ -54,6 +78,8 @@ export function Auth({ onLogin }: Props) {
 
     setLoading(true);
     setError('');
+    setNotice('');
+    setEmailNotConfirmed(false);
 
     try {
       const { data, error } = await supabase.auth.signInWithPassword({
@@ -63,8 +89,9 @@ export function Auth({ onLogin }: Props) {
 
       if (error) {
         console.error('Erro ao fazer login:', error);
-        if (error.message.includes('Email not confirmed')) {
-          setError('Seu email ainda não foi confirmado. Verifique sua caixa de entrada ou tente criar a conta novamente.');
+        if (error.message.includes('Email not confirmed') || (error as any).code === 'email_not_confirmed') {
+          setError('Seu e-mail ainda não foi confirmado. Abra o link que enviamos para sua caixa de entrada (confira também o spam).');
+          setEmailNotConfirmed(true);
         } else if (error.message.includes('Invalid login credentials')) {
           setError('Email ou senha incorretos. Verifique seus dados e tente novamente.');
         } else if (error.message.includes('Failed to fetch') || error.message.includes('fetch')) {
@@ -107,96 +134,48 @@ export function Auth({ onLogin }: Props) {
     setLoading(true);
     setError('');
 
-    const signupViaSDK = async () => {
-      const { data, error } = await supabase.auth.signUp({
-        email,
-        password,
-        options: {
-          data: {
-            display_name: displayName,
-            username,
-            birth_date: birthDate,
-          },
-        },
-      });
-
-      if (error) {
-        if (error.message.includes('already registered') || error.message.includes('already been registered')) {
-          setError('Este email já está cadastrado. Faça login ou recupere sua senha.');
-        } else {
-          setError(error.message || 'Erro ao criar conta. Tente novamente.');
-        }
-        setLoading(false);
-        return;
-      }
-
-      if (data.session) {
-        onLogin('email');
-      } else {
-        // Email de confirmação enviado
-        setError('');
-        setMode('login');
-        alert('Conta criada! Verifique seu email para confirmar o cadastro, depois faça login.');
-        setLoading(false);
-      }
-    };
-
+    // O cadastro é feito pelo Supabase Auth, que manda o e-mail de confirmação.
+    // A conta só pode entrar depois que a pessoa clicar no link do e-mail.
     try {
-      // Tentar via Edge Function (permite criar conta com email já confirmado)
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 8000);
-
-      let edgeFunctionFailed = false;
-
-      try {
-        const response = await fetch(
-          `https://${projectId}.supabase.co/functions/v1/make-server-86fee667/signup`,
-          {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': `Bearer ${publicAnonKey}`,
-            },
-            body: JSON.stringify({ email, password, displayName, username, birthDate }),
-            signal: controller.signal,
-          }
-        );
-        clearTimeout(timeout);
-
-        const result = await response.json();
-
-        if (!response.ok) {
-          if (result.error?.includes('já está cadastrado')) {
-            setError(result.error);
-            setLoading(false);
-            return;
-          }
-          // Outros erros da edge function — tentar SDK
-          edgeFunctionFailed = true;
-        } else {
-          // Sucesso via edge function — fazer login
-          const { error: loginError } = await supabase.auth.signInWithPassword({ email, password });
-          if (loginError) {
-            setError('Conta criada! Faça login para continuar.');
-            setMode('login');
-            setLoading(false);
-          } else {
-            onLogin('email');
-          }
-          return;
-        }
-      } catch (fetchErr: any) {
-        clearTimeout(timeout);
-        console.warn('Edge Function indisponível, usando fallback SDK:', fetchErr?.message);
-        edgeFunctionFailed = true;
+      const { needsConfirmation } = await signUpWithEmail(
+        { email, password, displayName, username, birthDate },
+        authRedirectUrl(window.location.origin),
+      );
+      if (needsConfirmation) {
+        setPassword('');
+        setConfirmPassword('');
+        setNotice('');
+        setResendCooldown(RESEND_COOLDOWN_SECONDS);
+        setMode('check-email');
+      } else {
+        // "Confirm email" desligado no Supabase: a conta já vem com sessão.
+        onLogin('email');
       }
+    } catch (err: any) {
+      console.error('Erro ao criar conta:', err);
+      setError(signupErrorMessage(err));
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      if (edgeFunctionFailed) {
-        await signupViaSDK();
-      }
-    } catch (err) {
-      console.error('Erro inesperado ao criar conta:', err);
-      setError('Erro inesperado. Por favor, tente novamente.');
+  const handleResendConfirmation = async () => {
+    if (!email) {
+      setError('Digite seu e-mail para reenviarmos o link.');
+      return;
+    }
+    setLoading(true);
+    setError('');
+    setNotice('');
+    try {
+      await resendSignupConfirmation(email, authRedirectUrl(window.location.origin));
+      setNotice('Enviamos um novo link. Confira sua caixa de entrada e o spam.');
+      setResendCooldown(RESEND_COOLDOWN_SECONDS);
+      setMode('check-email');
+    } catch (err: any) {
+      console.error('Erro ao reenviar confirmação:', err);
+      setError(signupErrorMessage(err));
+    } finally {
       setLoading(false);
     }
   };
@@ -266,6 +245,46 @@ export function Auth({ onLogin }: Props) {
           transition={{ delay: 0.4 }}
           className="bg-white/5 backdrop-blur-md rounded-2xl shadow-xl p-8 border border-white/10"
         >
+          {mode === 'check-email' ? (
+            <div className="text-center space-y-4" role="status">
+              <MailCheck className="mx-auto text-blue-300" size={40} aria-hidden="true" />
+              <h2 className="text-xl font-serif text-white">Confira seu e-mail</h2>
+              <p className="text-sm text-blue-200/80">
+                Enviamos um link de confirmação para{' '}
+                <span className="font-medium text-white break-all">{email}</span>.
+                Abra o e-mail e toque no link para ativar sua conta.
+              </p>
+              <p className="text-xs text-blue-200/60">
+                Não chegou? Confira a caixa de spam ou promoções. Se você já tinha uma
+                conta com este e-mail, é só entrar ou recuperar a senha.
+              </p>
+
+              {notice && (
+                <div className="p-3 bg-emerald-500/10 border border-emerald-500/30 rounded-lg text-sm text-emerald-200">
+                  {notice}
+                </div>
+              )}
+              {error && (
+                <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-200">
+                  {error}
+                </div>
+              )}
+
+              <button
+                type="button"
+                onClick={handleResendConfirmation}
+                disabled={loading || resendCooldown > 0}
+                className="w-full py-3 bg-blue-600/30 border border-blue-500/40 text-blue-100 rounded-xl font-medium hover:bg-blue-600/40 transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {loading
+                  ? 'Enviando...'
+                  : resendCooldown > 0
+                    ? `Reenviar e-mail (${resendCooldown}s)`
+                    : 'Reenviar e-mail'}
+              </button>
+            </div>
+          ) : (
+          <>
           {/* Botão Google - Primário */}
           <button 
             onClick={handleGoogleLogin}
@@ -399,6 +418,16 @@ export function Auth({ onLogin }: Props) {
             {error && (
               <div className="p-3 bg-red-500/10 border border-red-500/30 rounded-lg text-sm text-red-200">
                 {error}
+                {mode === 'login' && emailNotConfirmed && (
+                  <button
+                    type="button"
+                    onClick={handleResendConfirmation}
+                    disabled={loading}
+                    className="block mt-2 text-blue-300 hover:text-blue-200 font-medium underline disabled:opacity-50"
+                  >
+                    Reenviar e-mail de confirmação
+                  </button>
+                )}
               </div>
             )}
 
@@ -434,6 +463,8 @@ export function Auth({ onLogin }: Props) {
                'Enviar link de recuperação'}
             </button>
           </form>
+          </>
+          )}
 
           {/* Links de navegação */}
           <div className="mt-6 text-center space-y-2">
@@ -444,6 +475,7 @@ export function Auth({ onLogin }: Props) {
                   onClick={() => {
                     setMode('signup');
                     setError('');
+                    setEmailNotConfirmed(false);
                   }}
                   className="text-blue-300 hover:text-blue-200 font-medium"
                 >
@@ -451,11 +483,13 @@ export function Auth({ onLogin }: Props) {
                 </button>
               </p>
             )}
-            {(mode === 'signup' || mode === 'forgot') && (
+            {(mode === 'signup' || mode === 'forgot' || mode === 'check-email') && (
               <button
                 onClick={() => {
                   setMode('login');
                   setError('');
+                  setNotice('');
+                  setEmailNotConfirmed(false);
                 }}
                 className="text-sm text-blue-200/60 hover:text-blue-200"
               >
