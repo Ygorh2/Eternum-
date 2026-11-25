@@ -1,12 +1,13 @@
-import React, { useState } from 'react';
+import React, { useEffect, useRef, useState } from 'react';
 import { formatDate, parseLocalDate } from '../utils/dateUtils';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus, ImagePlus, Trash2 } from 'lucide-react';
+import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus, ImagePlus, Trash2, Grid3x3, List } from 'lucide-react';
 import type { MemorialPost, PostComment, PostInteractions, PostMediaItem, ReactionType } from '../data/api';
 import { canDeleteComment, getReactions } from '../utils/postInteractions';
 import { galleryPostKey, memorialPostItemKey, tributePostKey } from '../utils/postKeys';
 import { PostComments } from './PostComments';
 import { PostMediaCarousel } from './PostMediaCarousel';
+import { PostGrid, type PostGridItem } from './PostGrid';
 import {
   AlertDialog,
   AlertDialogAction,
@@ -28,6 +29,8 @@ interface Props {
   // Publicações com foto/vídeo e legenda
   posts?: MemorialPost[];
   postsError?: string | null;
+  /** Publicação (memorial_posts) a mostrar ao abrir, vinda da grade do perfil. */
+  focusPostId?: string;
   currentUserId?: string;
   onCreatePost?: () => void;
   onDeletePost?: (postId: string) => void;
@@ -82,6 +85,7 @@ export function MemorialDetail({
   onViewProfile,
   posts = NO_POSTS,
   postsError,
+  focusPostId,
   currentUserId,
   onCreatePost,
   onDeletePost,
@@ -146,6 +150,46 @@ export function MemorialDetail({
   );
 
   const [activeCommentPost, setActiveCommentPost] = useState<string | null>(null);
+
+  // Grade (3 colunas, só fotos/vídeos) ou lista completa. Sem escolha do
+  // usuário: grade quando há fotos, a menos que tenha vindo para ver uma
+  // publicação específica.
+  const [chosenView, setChosenView] = useState<'grid' | 'list' | null>(focusPostId ? 'list' : null);
+  const gridItems: PostGridItem[] = allPosts.flatMap((post): PostGridItem[] => {
+    const first = post.mediaList?.[0] ?? (post.media ? { url: post.media.url, type: post.media.type === 'video' ? ('video' as const) : ('image' as const) } : undefined);
+    if (!first?.url) return [];
+    const description = post.content ? `: ${post.content.slice(0, 80)}` : ` de ${post.author.name}`;
+    return [{
+      id: post.id,
+      url: first.url,
+      type: first.type,
+      count: post.mediaList?.length ?? 1,
+      label: `Abrir publicação${description}`,
+    }];
+  });
+  const textOnlyCount = allPosts.length - gridItems.length;
+  const viewMode: 'grid' | 'list' = chosenView ?? (gridItems.length > 0 ? 'grid' : 'list');
+
+  // Rola até a publicação escolhida (na grade do memorial ou do perfil).
+  const [scrollTarget, setScrollTarget] = useState<string | null>(focusPostId ? `post-${focusPostId}` : null);
+  const postRefs = useRef(new Map<string, HTMLDivElement>());
+  useEffect(() => {
+    if (!focusPostId) return;
+    setChosenView('list');
+    setScrollTarget(`post-${focusPostId}`);
+  }, [focusPostId]);
+  useEffect(() => {
+    if (!scrollTarget || viewMode !== 'list' || activeTab !== 'tributes') return;
+    const el = postRefs.current.get(scrollTarget);
+    if (!el) return; // ainda carregando: tenta de novo quando as publicações chegarem
+    el.scrollIntoView?.({ block: 'start', behavior: 'smooth' });
+    setScrollTarget(null);
+  }, [scrollTarget, viewMode, activeTab, allPosts.length]);
+
+  const openFromGrid = (postId: string) => {
+    setChosenView('list');
+    setScrollTarget(postId);
+  };
 
   const handlePostReaction = (post: TributePost, reaction: ReactionType) => {
     onToggleReaction?.(memorial.id, post.postKey, reaction);
@@ -335,11 +379,61 @@ export function MemorialDetail({
                  </button>
                </div>
 
-               {allPosts.map((post) => {
+               {allPosts.length > 0 && (
+                 <div className="flex justify-end gap-1" role="group" aria-label="Modo de exibição">
+                   <button
+                     type="button"
+                     onClick={() => setChosenView('grid')}
+                     aria-pressed={viewMode === 'grid'}
+                     aria-label="Ver em grade"
+                     className={`p-2 rounded-lg transition-colors ${viewMode === 'grid' ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'}`}
+                   >
+                     <Grid3x3 size={18} />
+                   </button>
+                   <button
+                     type="button"
+                     onClick={() => setChosenView('list')}
+                     aria-pressed={viewMode === 'list'}
+                     aria-label="Ver em lista"
+                     className={`p-2 rounded-lg transition-colors ${viewMode === 'list' ? 'bg-white/10 text-white' : 'text-white/40 hover:text-white/70'}`}
+                   >
+                     <List size={18} />
+                   </button>
+                 </div>
+               )}
+
+               {viewMode === 'grid' && (
+                 <div className="-mx-6 space-y-4">
+                   <PostGrid
+                     items={gridItems}
+                     onSelect={openFromGrid}
+                     emptyText="Ainda não há fotos neste memorial."
+                   />
+                   {textOnlyCount > 0 && (
+                     <div className="px-6 flex justify-center">
+                       <button
+                         type="button"
+                         onClick={() => setChosenView('list')}
+                         className="text-sm text-blue-200/70 hover:text-blue-100 underline-offset-4 hover:underline"
+                       >
+                         {textOnlyCount === 1 ? 'Ver 1 homenagem escrita' : `Ver ${textOnlyCount} homenagens escritas`}
+                       </button>
+                     </div>
+                   )}
+                 </div>
+               )}
+
+               {viewMode === 'list' && allPosts.map((post) => {
                  const reactions = getReactions(interactions, post.postKey);
                  const comments = interactions.comments[post.postKey] || [];
                  return (
-                 <div key={post.id} className="bg-[#1E293B]/60 border border-white/10 rounded-2xl overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
+                 <div
+                   key={post.id}
+                   ref={(el) => {
+                     if (el) postRefs.current.set(post.id, el);
+                     else postRefs.current.delete(post.id);
+                   }}
+                   className="bg-[#1E293B]/60 border border-white/10 rounded-2xl overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
                    {/* Post Header - Instagram Style */}
                    <div className="flex items-center justify-between p-4 border-b border-white/5">
                      <div className="flex items-center gap-3">

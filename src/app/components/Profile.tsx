@@ -1,18 +1,37 @@
 import React, { useState, useEffect } from 'react';
 import { formatDate } from '../utils/dateUtils';
 import { motion } from 'motion/react';
-import { Settings, Edit2, LogOut, Menu, User, Mail, Shield, AtSign, Calendar, Heart, Users, Star } from 'lucide-react';
+import { Settings, Edit2, LogOut, Menu, User, Mail, Shield, AtSign, Calendar, Heart, Users, Star, Grid3x3 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import * as api from '../data/api';
+import { PostGrid, gridItemsFromPosts } from './PostGrid';
 
 interface Props {
   onLogout: () => void;
   onOpenMenu: () => void;
   onSettings: () => void;
   memorials?: any[]; // Para contar os memoriais criados
+  // Grade de fotos: publicações feitas por mim
+  posts?: api.MemorialPost[];
+  postsLoading?: boolean;
+  postsHasMore?: boolean;
+  postsError?: string | null;
+  onLoadMorePosts?: () => void;
+  onOpenPost?: (postId: string) => void;
 }
 
-export function Profile({ onLogout, onOpenMenu, onSettings, memorials }: Props) {
+export function Profile({
+  onLogout,
+  onOpenMenu,
+  onSettings,
+  memorials,
+  posts = [],
+  postsLoading,
+  postsHasMore,
+  postsError,
+  onLoadMorePosts,
+  onOpenPost,
+}: Props) {
   const { user, userMetadata } = useAuth();
   const [isEditModalOpen, setIsEditModalOpen] = useState(false);
 
@@ -154,6 +173,30 @@ export function Profile({ onLogout, onOpenMenu, onSettings, memorials }: Props) 
              </div>
            </div>
          </motion.div>
+
+         {/* Grade de fotos (como no Instagram) */}
+         {onOpenPost && (
+           <section className="w-full mb-8" aria-labelledby="profile-posts-title">
+             <h3
+               id="profile-posts-title"
+               className="flex items-center justify-center gap-2 text-xs font-medium text-white/60 uppercase tracking-widest pb-3 mb-0.5 border-b border-white/10"
+             >
+               <Grid3x3 size={14} aria-hidden="true" />
+               Publicações
+             </h3>
+             <div className="-mx-6">
+               <PostGrid
+                 items={gridItemsFromPosts(posts)}
+                 onSelect={onOpenPost}
+                 loading={postsLoading}
+                 hasMore={postsHasMore}
+                 onLoadMore={onLoadMorePosts}
+                 error={postsError}
+                 emptyText="Você ainda não publicou fotos. Abra um memorial e toque em “Publicar foto”."
+               />
+             </div>
+           </section>
+         )}
 
          {/* Details Card */}
          <div className="w-full bg-white/5 border border-white/10 rounded-2xl overflow-hidden mb-6">

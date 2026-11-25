@@ -99,6 +99,7 @@ describe('<MemorialDetail /> publicações com foto e legenda', () => {
 
   it('mostra a publicação com legenda e carrossel, e reage com a chave post:<id>', async () => {
     const props = renderDetail({ posts: [post] })
+    await userEvent.click(screen.getByRole('button', { name: 'Ver em lista' }))
     expect(screen.getByText('Natal de 1998')).toBeInTheDocument()
     expect(screen.getByAltText('Natal de 1998 (1 de 2)')).toBeInTheDocument()
     expect(screen.getByText('1/2')).toBeInTheDocument()
@@ -119,13 +120,13 @@ describe('<MemorialDetail /> publicações com foto e legenda', () => {
   })
 
   it('quem não é autor nem dono não vê "Apagar"', () => {
-    renderDetail({ posts: [post], currentUserId: 'outra-pessoa', onDeletePost: vi.fn() })
+    renderDetail({ posts: [post], currentUserId: 'outra-pessoa', onDeletePost: vi.fn(), focusPostId: 'p1' })
     expect(screen.queryByRole('button', { name: 'Apagar publicação' })).not.toBeInTheDocument()
   })
 
   it('autor apaga depois de confirmar', async () => {
     const onDeletePost = vi.fn()
-    renderDetail({ posts: [post], currentUserId: 'u2', onDeletePost })
+    renderDetail({ posts: [post], currentUserId: 'u2', onDeletePost, focusPostId: 'p1' })
     await userEvent.click(screen.getByRole('button', { name: 'Apagar publicação' }))
     expect(onDeletePost).not.toHaveBeenCalled()
     await userEvent.click(screen.getByRole('button', { name: 'Apagar' }))
@@ -138,7 +139,65 @@ describe('<MemorialDetail /> publicações com foto e legenda', () => {
       posts: [post],
       currentUserId: 'dono',
       onDeletePost: vi.fn(),
+      focusPostId: 'p1',
     })
     expect(screen.getByRole('button', { name: 'Apagar publicação' })).toBeInTheDocument()
+  })
+})
+
+describe('<MemorialDetail /> grade de fotos', () => {
+  const post = {
+    id: 'p1',
+    memorialId: 'm1',
+    authorId: 'u2',
+    authorName: 'João',
+    caption: 'Natal de 1998',
+    media: [
+      { url: 'https://x/1.jpg', type: 'image' as const },
+      { url: 'https://x/2.jpg', type: 'image' as const },
+    ],
+    createdAt: '2024-03-01T12:00:00Z',
+  }
+  const videoPost = {
+    ...post,
+    id: 'p2',
+    caption: '',
+    media: [{ url: 'https://x/v.mp4', type: 'video' as const }],
+    createdAt: '2024-04-01T12:00:00Z',
+  }
+
+  it('com fotos, abre em grade de 3 colunas e mostra só as publicações com mídia', () => {
+    renderDetail({ posts: [post, videoPost] })
+    expect(screen.getByRole('button', { name: 'Ver em grade' })).toHaveAttribute('aria-pressed', 'true')
+    const grid = screen.getByRole('list', { name: 'Publicações em grade' })
+    expect(grid).toHaveClass('grid-cols-3')
+    expect(screen.getByRole('button', { name: 'Abrir publicação: Natal de 1998' })).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Abrir publicação de João' })).toBeInTheDocument()
+    // a homenagem só de texto não vira quadrado, mas tem atalho para a lista
+    expect(screen.queryByText('"Saudade"')).not.toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Ver 1 homenagem escrita' })).toBeInTheDocument()
+  })
+
+  it('tocar num quadrado abre a lista e rola até a publicação', async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    renderDetail({ posts: [post, videoPost] })
+    await userEvent.click(screen.getByRole('button', { name: 'Abrir publicação: Natal de 1998' }))
+    expect(screen.getByRole('button', { name: 'Ver em lista' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Natal de 1998')).toBeInTheDocument()
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView.mock.contexts[0]).toHaveTextContent('Natal de 1998')
+  })
+
+  it('vindo do perfil (focusPostId), abre direto na lista', () => {
+    renderDetail({ posts: [post], focusPostId: 'p1' })
+    expect(screen.getByRole('button', { name: 'Ver em lista' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.getByText('Natal de 1998')).toBeInTheDocument()
+  })
+
+  it('sem fotos, continua mostrando a lista de homenagens', () => {
+    renderDetail()
+    expect(screen.getByRole('button', { name: 'Ver em lista' })).toHaveAttribute('aria-pressed', 'true')
+    expect(screen.queryByRole('list', { name: 'Publicações em grade' })).not.toBeInTheDocument()
   })
 })
