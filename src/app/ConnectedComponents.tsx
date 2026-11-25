@@ -362,13 +362,44 @@ export function ConnectedProfile() {
   );
 }
 
+/**
+ * Mostrado quando o memorial da URL não existe ou o usuário não tem acesso a
+ * ele (memoriais privados não chegam do banco por causa da RLS). De propósito
+ * não diferencia os dois casos, para não revelar que um memorial privado existe.
+ */
+function MemorialUnavailable({ loading }: { loading: boolean }) {
+  const navigate = useNavigate();
+  if (loading) {
+    return (
+      <div role="status" className="h-full flex items-center justify-center text-white/60 text-sm">
+        Carregando memorial…
+      </div>
+    );
+  }
+  return (
+    <div className="h-full flex flex-col items-center justify-center gap-4 px-8 text-center">
+      <h1 className="text-lg font-medium text-white">Memorial não encontrado</h1>
+      <p className="text-sm text-white/60 leading-relaxed">
+        Este memorial não existe ou é privado. Se você foi convidado, peça um novo convite à família.
+      </p>
+      <button
+        type="button"
+        onClick={() => navigate('/feed')}
+        className="px-5 py-2.5 rounded-xl bg-white/10 border border-white/10 text-sm text-white/80 hover:bg-white/15 transition-colors"
+      >
+        Voltar ao feed
+      </button>
+    </div>
+  );
+}
+
 export function ConnectedMemorialDetail() {
   const { id } = useParams();
-  const { memorials, tributes, user } = useApp();
+  const { memorials, tributes, user, memorialsLoading } = useApp();
   const navigate = useNavigate();
   
   const memorial = useMemo(() => 
-    memorials.find(m => m.id === id) || memorials[0], 
+    memorials.find(m => m.id === id),
   [memorials, id]);
 
   const memorialTributes = useMemo(() => 
@@ -380,7 +411,7 @@ export function ConnectedMemorialDetail() {
   const candle = useCandle(memorial?.id, user);
   const follow = useMemorialFollow(memorial?.id, user);
 
-  if (!memorial) return <div>Memorial not found</div>;
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
   return (
     <MemorialDetail 
@@ -399,7 +430,7 @@ export function ConnectedMemorialDetail() {
 
 export function ConnectedLivingMemory() {
   const { id } = useParams();
-  const { memorials, tributes, user } = useApp();
+  const { memorials, tributes, user, memorialsLoading } = useApp();
   const navigate = useNavigate();
 
   const memorial = useMemo(() => memorials.find(m => m.id === id), [memorials, id]);
@@ -408,7 +439,7 @@ export function ConnectedLivingMemory() {
   const isAdmin = memorial?.createdBy === user?.id;
   const candle = useCandle(memorial?.id, user);
 
-  if (!memorial) return <div>Memorial not found</div>;
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
   return (
     <LivingMemory 
@@ -440,12 +471,12 @@ export function ConnectedCreateMemorial() {
 
 export function ConnectedWriteTribute() {
   const { id } = useParams();
-  const { memorials, handleAddTribute, user } = useApp();
+  const { memorials, handleAddTribute, user, memorialsLoading } = useApp();
   const navigate = useNavigate();
   
   const memorial = useMemo(() => memorials.find(m => m.id === id), [memorials, id]);
 
-  if (!memorial) return <div>Memorial not found</div>;
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
   return (
     <WriteTribute 
