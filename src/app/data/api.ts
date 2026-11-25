@@ -135,6 +135,39 @@ export async function createMemorial(input: any) {
   return mapMemorialFromDb(data);
 }
 
+/**
+ * Atualiza os dados editáveis de um memorial. Só o dono consegue: a policy
+ * "memorials_update_own" (auth.uid() = created_by) bloqueia os demais, e
+ * filtramos por created_by também aqui para devolver uma mensagem clara.
+ * Campos ausentes em `changes` não são alterados.
+ */
+export async function updateMemorial(id: string, changes: any) {
+  const userId = await requireUserId();
+
+  const row: Record<string, any> = {};
+  if (changes.name !== undefined) row.name = String(changes.name).trim();
+  if (changes.birthDate !== undefined) row.birth_date = changes.birthDate || null;
+  if (changes.deathDate !== undefined) row.death_date = changes.deathDate || null;
+  if (changes.bio !== undefined) row.bio = changes.bio || null;
+  if (changes.quote !== undefined) row.quote = changes.quote || null;
+  if (changes.photo !== undefined) row.photo = changes.photo || null;
+  if (changes.cover !== undefined) row.cover = changes.cover || null;
+  if (changes.accessGroup !== undefined) row.access_group = changes.accessGroup;
+  if (changes.addToSky !== undefined) row.add_to_sky = !!changes.addToSky;
+
+  const { data, error } = await supabase
+    .from('memorials')
+    .update(row)
+    .eq('id', id)
+    .eq('created_by', userId)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new Error('Você não tem permissão para editar este memorial.');
+  return mapMemorialFromDb(data);
+}
+
 export async function deleteMemorial(id: string) {
   const { error } = await supabase.from('memorials').delete().eq('id', id);
   if (error) throw error;

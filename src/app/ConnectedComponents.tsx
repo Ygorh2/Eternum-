@@ -5,6 +5,7 @@ import * as api from './data/api';
 import { Feed } from './components/Feed';
 import { MemorialDetail } from './components/MemorialDetail';
 import { CreateMemorial } from './components/CreateMemorial';
+import { EditMemorial, type EditMemorialChanges } from './components/EditMemorial';
 import { LivingMemory } from './components/LivingMemory';
 import { Profile } from './components/Profile';
 import { WriteTribute } from './components/WriteTribute';
@@ -320,7 +321,7 @@ export function ConnectedMyMemorials() {
     <MyMemorials 
       memorials={myMemorials} 
       onBack={() => navigate('/feed')}
-      onEdit={(id) => navigate(`/memorial/${id}`)} 
+      onEdit={(id) => navigate(`/memorial/${id}/edit`)}
       onDelete={handleDeleteMemorial}
       onLocate={(id) => {
         setSkyTargetId(id);
@@ -465,6 +466,56 @@ export function ConnectedCreateMemorial() {
         handleAddMemorial(m);
       }} 
       initialType={initialType} 
+    />
+  );
+}
+
+export function ConnectedEditMemorial() {
+  const { id } = useParams();
+  const { memorials, user, memorialsLoading, handleUpdateMemorial } = useApp();
+  const navigate = useNavigate();
+
+  const memorial = useMemo(() => memorials.find((m) => m.id === id), [memorials, id]);
+
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
+
+  // A RLS já impede que outra pessoa salve; aqui só evitamos mostrar o formulário
+  if (!user || user.isGuest || memorial.createdBy !== user.id) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-4 px-8 text-center">
+        <h1 className="text-lg font-medium text-white">Sem permissão</h1>
+        <p className="text-sm text-white/60 leading-relaxed">
+          Apenas quem criou este memorial pode editá-lo.
+        </p>
+        <button
+          onClick={() => navigate(`/memorial/${memorial.id}`)}
+          className="px-5 py-2.5 rounded-full bg-white/10 text-white text-sm hover:bg-white/20 transition-colors"
+        >
+          Ver memorial
+        </button>
+      </div>
+    );
+  }
+
+  const save = async ({ photoFile, coverFile, ...values }: EditMemorialChanges) => {
+    // Envia só as imagens trocadas; as outras continuam com a URL atual
+    const [photo, cover] = await Promise.all([
+      photoFile ? api.uploadMedia(photoFile, 'profile') : Promise.resolve(undefined),
+      coverFile ? api.uploadMedia(coverFile, 'cover') : Promise.resolve(undefined),
+    ]);
+    await handleUpdateMemorial(memorial.id, {
+      ...values,
+      ...(photo ? { photo } : {}),
+      ...(cover ? { cover } : {}),
+    });
+    navigate(`/memorial/${memorial.id}`);
+  };
+
+  return (
+    <EditMemorial
+      memorial={memorial}
+      onCancel={() => navigate(-1)}
+      onSave={save}
     />
   );
 }
