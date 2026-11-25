@@ -19,6 +19,7 @@ import { Onboarding } from './components/Onboarding';
 import { PublicProfile } from './components/PublicProfile';
 import { AcceptInvite } from './components/AcceptInvite';
 import { People } from './components/People';
+import { CreatePost } from './components/CreatePost';
 import { getReactions, withComment, withReaction } from './utils/postInteractions';
 import { tributeIdFromPostKey } from './utils/postKeys';
 
@@ -186,6 +187,54 @@ function useMemorialFollow(memorialId: string | undefined, user: any) {
   return { follow: info, followError: error, onToggleFollow: toggle };
 }
 
+/** Publicações com foto/vídeo e legenda desses memoriais (tabela memorial_posts). */
+function useMemorialPosts(memorialIds: string[]) {
+  const idsKey = useMemo(() => Array.from(new Set(memorialIds)).sort().join(','), [memorialIds]);
+  const [posts, setPosts] = useState<api.MemorialPost[]>([]);
+  const [postsError, setPostsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!idsKey) {
+      setPosts([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchMemorialPosts(idsKey.split(','))
+      .then((data) => {
+        if (!cancelled) {
+          setPosts(data);
+          setPostsError(null);
+        }
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar publicações:', err);
+        if (!cancelled) setPostsError('Não foi possível carregar as publicações.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [idsKey]);
+
+  const deletePost = async (postId: string) => {
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+    setPostsError(null);
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+    try {
+      await api.deleteMemorialPost(post);
+    } catch (err: any) {
+      console.error('Erro ao apagar publicação:', err);
+      setPosts((prev) =>
+        [...prev, post].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      );
+      setPostsError('Não foi possível apagar a publicação. Tente de novo.');
+    }
+  };
+
+  return { posts, postsError, onDeletePost: deletePost };
+}
+
 // Public Routes
 
 export function ConnectedOnboarding() {
@@ -271,10 +320,12 @@ export function ConnectedFeed() {
 
   const feedMemorialIds = useMemo(() => feedMemorials.map((m: any) => m.id), [feedMemorials]);
   const postInteractions = usePostInteractions(feedMemorialIds, user);
+  const { posts } = useMemorialPosts(feedMemorialIds);
 
   return (
     <Feed
       memorials={feedMemorials}
+      posts={posts}
       creatorNames={creatorNames}
       tributes={tributes}
       {...postInteractions}
@@ -411,6 +462,8 @@ export function ConnectedMemorialDetail() {
   const postInteractions = usePostInteractions(memorialIds, user);
   const candle = useCandle(memorial?.id, user);
   const follow = useMemorialFollow(memorial?.id, user);
+  const { posts, postsError, onDeletePost } = useMemorialPosts(memorialIds);
+  const canPost = !!user && !user.isGuest;
 
   if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
@@ -418,6 +471,11 @@ export function ConnectedMemorialDetail() {
     <MemorialDetail 
       memorial={memorial}
       tributes={memorialTributes}
+      posts={posts}
+      postsError={postsError}
+      currentUserId={canPost ? user.id : undefined}
+      onCreatePost={canPost ? () => navigate(`/memorial/${memorial.id}/nova-publicacao`) : undefined}
+      onDeletePost={onDeletePost}
       {...postInteractions}
       {...candle}
       {...follow}
@@ -539,6 +597,29 @@ export function ConnectedWriteTribute() {
          handleAddTribute(t);
          navigate(`/memorial/${id}`);
        }}
+    />
+  );
+}
+
+export function ConnectedCreatePost() {
+  const { id } = useParams();
+  const { memorials, user, memorialsLoading } = useApp();
+  const navigate = useNavigate();
+
+  const memorial = useMemo(() => memorials.find((m) => m.id === id), [memorials, id]);
+
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
+  if (!user || user.isGuest) return <Navigate to={`/memorial/${memorial.id}`} replace />;
+
+  return (
+    <CreatePost
+      memorialName={memorial.name}
+      memorialPhoto={memorial.photo}
+      onCancel={() => navigate(`/memorial/${memorial.id}`)}
+      onPublish={async (caption, files) => {
+        await api.createMemorialPost({ memorialId: memorial.id, caption, files, authorName: user.name });
+        navigate(`/memorial/${memorial.id}`);
+      }}
     />
   );
 }

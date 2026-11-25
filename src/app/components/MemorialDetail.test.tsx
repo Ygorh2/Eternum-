@@ -82,3 +82,63 @@ describe('<MemorialDetail /> interações', () => {
     expect(screen.getByText('7')).toBeInTheDocument()
   })
 })
+
+describe('<MemorialDetail /> publicações com foto e legenda', () => {
+  const post = {
+    id: 'p1',
+    memorialId: 'm1',
+    authorId: 'u2',
+    authorName: 'João',
+    caption: 'Natal de 1998',
+    media: [
+      { url: 'https://x/1.jpg', type: 'image' as const },
+      { url: 'https://x/2.jpg', type: 'image' as const },
+    ],
+    createdAt: '2024-03-01T12:00:00Z',
+  }
+
+  it('mostra a publicação com legenda e carrossel, e reage com a chave post:<id>', async () => {
+    const props = renderDetail({ posts: [post] })
+    expect(screen.getByText('Natal de 1998')).toBeInTheDocument()
+    expect(screen.getByAltText('Natal de 1998 (1 de 2)')).toBeInTheDocument()
+    expect(screen.getByText('1/2')).toBeInTheDocument()
+    await userEvent.click(screen.getAllByRole('button', { name: /Amém/ })[0])
+    expect(props.onToggleReaction).toHaveBeenCalledWith('m1', 'post:p1', 'amen')
+  })
+
+  it('botão "Publicar foto" aparece só para quem pode publicar', async () => {
+    const onCreatePost = vi.fn()
+    renderDetail({ onCreatePost })
+    await userEvent.click(screen.getByRole('button', { name: /Publicar foto/ }))
+    expect(onCreatePost).toHaveBeenCalled()
+  })
+
+  it('sem onCreatePost (visitante), não mostra o botão', () => {
+    renderDetail()
+    expect(screen.queryByRole('button', { name: /Publicar foto/ })).not.toBeInTheDocument()
+  })
+
+  it('quem não é autor nem dono não vê "Apagar"', () => {
+    renderDetail({ posts: [post], currentUserId: 'outra-pessoa', onDeletePost: vi.fn() })
+    expect(screen.queryByRole('button', { name: 'Apagar publicação' })).not.toBeInTheDocument()
+  })
+
+  it('autor apaga depois de confirmar', async () => {
+    const onDeletePost = vi.fn()
+    renderDetail({ posts: [post], currentUserId: 'u2', onDeletePost })
+    await userEvent.click(screen.getByRole('button', { name: 'Apagar publicação' }))
+    expect(onDeletePost).not.toHaveBeenCalled()
+    await userEvent.click(screen.getByRole('button', { name: 'Apagar' }))
+    expect(onDeletePost).toHaveBeenCalledWith('p1')
+  })
+
+  it('dono do memorial também pode apagar (moderação)', () => {
+    renderDetail({
+      memorial: { ...memorial, createdBy: 'dono' },
+      posts: [post],
+      currentUserId: 'dono',
+      onDeletePost: vi.fn(),
+    })
+    expect(screen.getByRole('button', { name: 'Apagar publicação' })).toBeInTheDocument()
+  })
+})
