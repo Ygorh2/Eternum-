@@ -20,6 +20,8 @@ import {
   ConnectedAcceptInvite,
   ConnectedPeople,
   ConnectedCreatePost,
+  ConnectedBlockedUsers,
+  ConnectedAdminReports,
   ProtectedRoute
 } from "./app/ConnectedComponents";
 
@@ -133,6 +135,22 @@ export const router = createBrowserRouter([
             <ConnectedSettings />
           </ProtectedRoute>
         ) 
+      },
+      {
+        path: "settings/bloqueados",
+        element: (
+          <ProtectedRoute>
+            <ConnectedBlockedUsers />
+          </ProtectedRoute>
+        )
+      },
+      {
+        path: "admin/denuncias",
+        element: (
+          <ProtectedRoute>
+            <ConnectedAdminReports />
+          </ProtectedRoute>
+        )
       },
       {
         path: "notifications",

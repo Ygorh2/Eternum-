@@ -22,6 +22,10 @@ import { PublicProfile } from './components/PublicProfile';
 import { AcceptInvite } from './components/AcceptInvite';
 import { People } from './components/People';
 import { CreatePost } from './components/CreatePost';
+import { ReportDialog } from './components/ReportDialog';
+import { BlockedUsers, type BlockedUser } from './components/BlockedUsers';
+import { AdminReports, type ReportsFilter } from './components/AdminReports';
+import type { ReportTarget } from './utils/reports';
 import { getReactions, withComment, withoutComment, withReaction } from './utils/postInteractions';
 import { tributeIdFromPostKey } from './utils/postKeys';
 import {
@@ -127,6 +131,25 @@ function usePostInteractions(memorialIds: string[], user: any) {
     onDeleteComment: deleteComment,
     onDismissError: () => setError(null),
   };
+}
+
+/**
+ * Denúncias: guarda o que está sendo denunciado e devolve a janela pronta.
+ * Visitante não denuncia (openReport fica undefined e a opção não aparece).
+ */
+function useReporting(user: any) {
+  const canReport = !!user && !user.isGuest;
+  const [target, setTarget] = useState<ReportTarget | null>(null);
+  const dialog = (
+    <ReportDialog
+      target={target}
+      onClose={() => setTarget(null)}
+      onSubmit={(t, reason, details) =>
+        api.reportContent({ targetType: t.type, targetId: t.id, reason, details })
+      }
+    />
+  );
+  return { onReport: canReport ? setTarget : undefined, reportDialog: dialog };
 }
 
 /** Velas do memorial: total e se o usuário já acendeu a dele (1 por pessoa). */
@@ -495,12 +518,15 @@ export function ConnectedFeed() {
   const feed = useFeed(user);
   const feedMemorialIds = useMemo(() => memorialIdsOf(feed.posts), [feed.posts]);
   const postInteractions = usePostInteractions(feedMemorialIds, user);
+  const { onReport, reportDialog } = useReporting(user);
 
   return (
+    <>
     <Feed
       memorials={memorials}
       {...feed}
       {...postInteractions}
+      onReport={onReport}
       currentUserId={user && !user.isGuest ? user.id : undefined}
       onSelectMemorial={(id) => navigate(`/memorial/${id}`)}
       onCreate={(type) => navigate(`/create-memorial?type=${type || 'person'}`)}
@@ -509,6 +535,8 @@ export function ConnectedFeed() {
       unreadNotifications={unreadNotifications}
       onOpenNotifications={user && !user.isGuest ? () => navigate('/notifications') : undefined}
     />
+    {reportDialog}
+    </>
   );
 }
 
@@ -627,6 +655,8 @@ export function ConnectedSettings() {
   const { handleLogout, user } = useApp();
   const navigate = useNavigate();
   const pref = useNotificationsPreference(user);
+  const isAdmin = useIsAppAdmin(user);
+  const loggedIn = !!user && !user.isGuest;
   return (
     <Settings
       onBack={() => navigate('/profile')}
@@ -634,6 +664,159 @@ export function ConnectedSettings() {
       notificationsEnabled={pref.enabled}
       onToggleNotifications={pref.toggle}
       notificationsError={pref.error}
+      onOpenBlocked={loggedIn ? () => navigate('/settings/bloqueados') : undefined}
+      onOpenReports={isAdmin ? () => navigate('/admin/denuncias') : undefined}
+    />
+  );
+}
+
+/** Se o usuário logado é administrador (null enquanto confere). */
+function useIsAppAdmin(user: any): boolean | null {
+  const userId = !user || user.isGuest ? undefined : user.id;
+  const [isAdmin, setIsAdmin] = useState<boolean | null>(null);
+  useEffect(() => {
+    if (!userId) {
+      setIsAdmin(false);
+      return;
+    }
+    let cancelled = false;
+    setIsAdmin(null);
+    api
+      .isAppAdmin()
+      .then((v) => {
+        if (!cancelled) setIsAdmin(v);
+      })
+      .catch((err) => {
+        console.error('Erro ao conferir administrador:', err);
+        if (!cancelled) setIsAdmin(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+  return isAdmin;
+}
+
+export function ConnectedBlockedUsers() {
+  const { user, reloadData } = useApp();
+  const navigate = useNavigate();
+  const userId = !user || user.isGuest ? undefined : user.id;
+  const [users, setUsers] = useState<BlockedUser[]>([]);
+  const [loading, setLoading] = useState(!!userId);
+  const [error, setError] = useState<string | null>(null);
+  const [unblockingId, setUnblockingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!userId) {
+      setLoading(false);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    api
+      .fetchBlockedUsers()
+      .then((list) => {
+        if (!cancelled) setUsers(list);
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar bloqueados:', err);
+        if (!cancelled) setError('Não foi possível carregar a lista.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [userId]);
+
+  const handleUnblock = async (id: string) => {
+    setUnblockingId(id);
+    setError(null);
+    try {
+      await api.unblockUser(id);
+      setUsers((prev) => prev.filter((u) => u.id !== id));
+      reloadData();
+    } catch (err: any) {
+      setError(err?.message || 'Não foi possível desbloquear. Tente de novo.');
+    } finally {
+      setUnblockingId(null);
+    }
+  };
+
+  return (
+    <BlockedUsers
+      users={users}
+      loading={loading}
+      error={error}
+      unblockingId={unblockingId}
+      onUnblock={handleUnblock}
+      onViewProfile={(id) => navigate(`/user/${id}`)}
+      onBack={() => navigate('/settings')}
+    />
+  );
+}
+
+export function ConnectedAdminReports() {
+  const { user } = useApp();
+  const navigate = useNavigate();
+  const isAdmin = useIsAppAdmin(user);
+  const [filter, setFilter] = useState<ReportsFilter>('pending');
+  const [reports, setReports] = useState<api.AdminReport[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    api
+      .fetchReports(filter)
+      .then((list) => {
+        if (!cancelled) setReports(list);
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar denúncias:', err);
+        if (!cancelled) setError('Não foi possível carregar as denúncias.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isAdmin, filter]);
+
+  const handleSetStatus = async (id: string, status: api.ReportStatus) => {
+    setUpdatingId(id);
+    setError(null);
+    try {
+      await api.updateReportStatus(id, status);
+      setReports((prev) =>
+        filter === 'all' ? prev.map((r) => (r.id === id ? { ...r, status } : r)) : prev.filter((r) => r.id !== id)
+      );
+    } catch (err: any) {
+      setError(err?.message || 'Não foi possível atualizar a denúncia.');
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  return (
+    <AdminReports
+      isAdmin={isAdmin}
+      reports={reports}
+      loading={loading}
+      error={error}
+      filter={filter}
+      onFilterChange={setFilter}
+      updatingId={updatingId}
+      onSetStatus={handleSetStatus}
+      onOpenMemorial={(id) => navigate(`/memorial/${id}`)}
+      onOpenProfile={(id) => navigate(`/user/${id}`)}
+      onBack={() => navigate('/settings')}
     />
   );
 }
@@ -795,11 +978,14 @@ export function ConnectedMemorialDetail() {
   const follow = useMemorialFollow(memorial?.id, user);
   const { posts, postsError, onDeletePost } = useMemorialPosts(memorialIds);
   const canPost = !!user && !user.isGuest;
+  const { onReport, reportDialog } = useReporting(user);
 
   if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
   return (
+    <>
     <MemorialDetail 
+      onReport={onReport}
       memorial={memorial}
       tributes={memorialTributes}
       posts={posts}
@@ -816,6 +1002,8 @@ export function ConnectedMemorialDetail() {
       onWriteTribute={() => navigate(`/write-tribute/${memorial.id}`)}
       onViewProfile={(userId) => navigate(`/user/${userId}`)}
     />
+    {reportDialog}
+    </>
   );
 }
 
@@ -958,21 +1146,27 @@ export function ConnectedCreatePost() {
 
 export function ConnectedPublicProfile() {
   const { id } = useParams();
-  const { memorials, user } = useApp();
+  const { memorials, user, reloadData } = useApp();
   const navigate = useNavigate();
+  const { onReport, reportDialog } = useReporting(user);
   const userPosts = useUserPosts(id);
 
   if (!id) return <div>Usuário não encontrado</div>;
 
   return (
-    <PublicProfile
-      userId={id}
-      currentUserId={user?.id}
-      memorials={memorials}
-      {...userPosts}
-      onBack={() => navigate(-1)}
-      onSelectMemorial={(memorialId) => navigate(`/memorial/${memorialId}`)}
-    />
+    <>
+      <PublicProfile
+        userId={id}
+        currentUserId={user?.id}
+        memorials={memorials}
+        {...userPosts}
+        onBack={() => navigate(-1)}
+        onSelectMemorial={(memorialId) => navigate(`/memorial/${memorialId}`)}
+        onReport={onReport}
+        onBlockedChange={reloadData}
+      />
+      {reportDialog}
+    </>
   );
 }
 

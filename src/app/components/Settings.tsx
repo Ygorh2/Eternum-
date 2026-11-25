@@ -1,6 +1,6 @@
 import React, { useState } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, Bell, Lock, Mail, Users, Moon, Palette, HelpCircle, ChevronRight, LogOut, Loader2, Check } from 'lucide-react';
+import { ArrowLeft, Bell, Lock, Mail, Users, Moon, Palette, HelpCircle, ChevronRight, LogOut, Loader2, Check, Ban, Flag } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 
 interface Props {
@@ -10,6 +10,10 @@ interface Props {
   notificationsEnabled?: boolean | null;
   onToggleNotifications?: (enabled: boolean) => void;
   notificationsError?: string | null;
+  /** Abre a lista de pessoas bloqueadas. */
+  onOpenBlocked?: () => void;
+  /** Só para administradores: abre as denúncias recebidas. */
+  onOpenReports?: () => void;
 }
 
 export function Settings({
@@ -18,6 +22,8 @@ export function Settings({
   notificationsEnabled = null,
   onToggleNotifications,
   notificationsError,
+  onOpenBlocked,
+  onOpenReports,
 }: Props) {
   const { user, updateEmail, updatePassword } = useAuth();
   const notifications = notificationsEnabled !== false;
@@ -179,6 +185,42 @@ export function Settings({
              </button>
           </div>
         </section>
+
+        {/* Privacidade e segurança */}
+        {(onOpenBlocked || onOpenReports) && (
+          <section>
+            <h2 className="text-xs font-bold text-white/40 uppercase tracking-widest mb-3 ml-2">Privacidade e segurança</h2>
+            <div className="bg-white/5 border border-white/10 rounded-2xl overflow-hidden">
+              {onOpenBlocked && (
+                <button
+                  onClick={onOpenBlocked}
+                  className="w-full p-4 flex items-center justify-between hover:bg-white/5 transition-colors border-b border-white/5 last:border-b-0"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-slate-500/10 text-slate-300 rounded-lg"><Ban size={18} /></div>
+                    <span className="text-sm font-medium">Pessoas bloqueadas</span>
+                  </div>
+                  <ChevronRight size={16} className="text-white/30" />
+                </button>
+              )}
+              {onOpenReports && (
+                <button
+                  onClick={onOpenReports}
+                  className="w-full p-4 flex items-center justify-between hover:bg-white/5 transition-colors"
+                >
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 bg-red-500/10 text-red-300 rounded-lg"><Flag size={18} /></div>
+                    <div className="text-left">
+                      <span className="text-sm font-medium block">Denúncias recebidas</span>
+                      <span className="text-xs text-white/40">Só administradores veem esta opção</span>
+                    </div>
+                  </div>
+                  <ChevronRight size={16} className="text-white/30" />
+                </button>
+              )}
+            </div>
+          </section>
+        )}
 
         {/* Preferences */}
         <section>

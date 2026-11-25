@@ -1,12 +1,14 @@
 import React, { useEffect, useRef, useState } from 'react';
 import { formatDate, parseLocalDate } from '../utils/dateUtils';
 import { motion, AnimatePresence } from 'motion/react';
-import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus, ImagePlus, Trash2, Grid3x3, List } from 'lucide-react';
+import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, Play, UserPlus, ImagePlus, Trash2, Grid3x3, List } from 'lucide-react';
 import type { MemorialPost, PostComment, PostInteractions, PostMediaItem, ReactionType } from '../data/api';
 import { canDeleteComment, getReactions } from '../utils/postInteractions';
 import { galleryPostKey, memorialPostItemKey, tributePostKey } from '../utils/postKeys';
 import { PostComments } from './PostComments';
 import { PostMediaCarousel } from './PostMediaCarousel';
+import { PostOptionsMenu } from './PostOptionsMenu';
+import { reportTargetFromPostKey, type ReportTarget } from '../utils/reports';
 import { PostGrid, type PostGridItem } from './PostGrid';
 import {
   AlertDialog,
@@ -50,6 +52,8 @@ interface Props {
   follow?: { count: number; isFollowing: boolean };
   followError?: string | null;
   onToggleFollow?: () => void;
+  /** Abre a janela de denúncia (post ou comentário). */
+  onReport?: (target: ReportTarget) => void;
 }
 
 // Tribute Post interface for Instagram-style posts
@@ -102,6 +106,7 @@ export function MemorialDetail({
   follow = { count: 0, isFollowing: false },
   followError,
   onToggleFollow,
+  onReport,
 }: Props) {
   const [activeTab, setActiveTab] = useState<'tributes' | 'living-memory' | 'about'>('tributes');
   const isFollowing = follow.isFollowing;
@@ -126,7 +131,7 @@ export function MemorialDetail({
   const galleryPosts: TributePost[] = (memorial.gallery || []).map((item: any, i: number) => ({
     id: `gallery-${memorial.id}-${i}`,
     postKey: galleryPostKey(item.url),
-    author: { name: 'Administrador' },
+    author: { id: memorial.createdBy, name: 'Administrador' },
     content: '',
     date: memorial.createdAt || '',
     media: { type: item.type === 'video' ? ('video' as const) : ('photo' as const), url: item.url },
@@ -459,9 +464,22 @@ export function MemorialDetail({
                          <Trash2 size={18} />
                        </button>
                      ) : (
-                       <button className="p-2 text-white/40 hover:text-white/60 transition-colors">
-                         <MoreVertical size={18} />
-                       </button>
+                       (() => {
+                         const target = reportTargetFromPostKey(post.postKey, memorial.id);
+                         const isMine = !!currentUserId && post.author.id === currentUserId;
+                         return (
+                           <PostOptionsMenu
+                             onReport={onReport && currentUserId && target && !isMine ? () => onReport(target) : undefined}
+                             reportLabel={
+                               target?.type === 'tribute'
+                                 ? 'Denunciar homenagem'
+                                 : target?.type === 'memorial'
+                                   ? 'Denunciar memorial'
+                                   : 'Denunciar publicação'
+                             }
+                           />
+                         );
+                       })()
                      )}
                    </div>
 
@@ -560,6 +578,8 @@ export function MemorialDetail({
                        onSubmit={(text) => onAddComment!(memorial.id, post.postKey, text)}
                        onDelete={onDeleteComment}
                        canDelete={(c) => canDeleteComment(c, currentUserId, memorial.createdBy)}
+                       onReport={onReport ? (c) => onReport({ type: 'comment', id: c.id }) : undefined}
+                       canReport={(c) => !!currentUserId && c.userId !== currentUserId}
                      />
                    </div>
                  </div>

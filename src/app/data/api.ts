@@ -10,6 +10,15 @@ import {
   setCachedSignedUrl,
   toStoredMediaUrl,
 } from '../utils/mediaUrls';
+import {
+  BLOCKED_INTERACTION_MESSAGE,
+  MAX_REPORT_DETAILS,
+  REPORT_REASONS,
+  isPermissionError,
+  isUuid,
+  type ReportReason,
+  type ReportTargetType,
+} from '../utils/reports';
 
 // ------------------------------------------------------------------
 // Mapeadores: linha do banco (snake_case) <-> objeto usado nas telas
@@ -55,6 +64,11 @@ async function requireUserId(): Promise<string> {
     throw new Error('Você precisa estar logado para fazer isso.');
   }
   return data.user.id;
+}
+
+/** RLS barrou (ex.: o dono do conteúdo bloqueou você): troca por uma mensagem clara. */
+function friendlyWriteError(error: any): any {
+  return isPermissionError(error) ? new Error(BLOCKED_INTERACTION_MESSAGE) : error;
 }
 
 // ------------------------------------------------------------------
@@ -889,7 +903,7 @@ export async function addReaction(
     user_id: userId,
     reaction,
   });
-  if (error && error.code !== '23505') throw error; // já reagiu
+  if (error && error.code !== '23505') throw friendlyWriteError(error); // já reagiu
 }
 
 export async function removeReaction(postKey: string, reaction: ReactionType) {
@@ -929,7 +943,7 @@ export async function addComment(
     })
     .select('id, post_key, memorial_id, user_id, content, created_at')
     .single();
-  if (error) throw error;
+  if (error) throw friendlyWriteError(error);
   return mapCommentFromDb(data, authorName);
 }
 
@@ -1158,7 +1172,7 @@ export async function followUser(targetUserId: string) {
   const { error } = await supabase
     .from('follows')
     .insert({ follower_id: userId, following_id: targetUserId });
-  if (error && error.code !== '23505') throw error; // ignora "já segue"
+  if (error && error.code !== '23505') throw friendlyWriteError(error); // ignora "já segue"
 }
 
 export async function unfollowUser(targetUserId: string) {
@@ -1316,4 +1330,178 @@ export function subscribeToNotifications(userId: string, onChange: () => void): 
   return () => {
     supabase.removeChannel(channel);
   };
+}
+
+// ------------------------------------------------------------------
+// Denúncias e bloqueios (migration 0015)
+// ------------------------------------------------------------------
+
+/** Tabelas da 0015 ainda não criadas: avisa com uma mensagem clara. */
+function isMissingModerationTable(error: any): boolean {
+  if (!error) return false;
+  if (error.code === '42P01' || error.code === 'PGRST205' || error.code === 'PGRST202') {
+    console.warn('Denúncias/bloqueios ainda não disponíveis (rode a migration 0015):', error.message);
+    return true;
+  }
+  return false;
+}
+
+const MODERATION_NOT_READY = 'Esta função ainda não foi ativada no banco (migration 0015).';
+
+/**
+ * Envia uma denúncia. O banco confere o alvo e guarda autor e cópia do texto;
+ * o app só manda tipo, id, motivo e o texto opcional.
+ */
+export async function reportContent(input: {
+  targetType: ReportTargetType;
+  targetId: string;
+  reason: ReportReason;
+  details?: string;
+}) {
+  await requireUserId();
+  if (!REPORT_REASONS.some((r) => r.value === input.reason)) throw new Error('Escolha um motivo.');
+  if (!isUuid(input.targetId)) throw new Error('Não encontramos este conteúdo.');
+  const details = (input.details || '').trim();
+  if (details.length > MAX_REPORT_DETAILS) {
+    throw new Error(`O texto pode ter no máximo ${MAX_REPORT_DETAILS} caracteres.`);
+  }
+  // Sem .select(): só administradores leem denúncias.
+  const { error } = await supabase.from('reports').insert({
+    target_type: input.targetType,
+    target_id: input.targetId,
+    reason: input.reason,
+    details: details || null,
+  });
+  if (!error) return;
+  if (error.code === '23505') throw new Error('Você já denunciou isto. Obrigado por avisar!');
+  if (isMissingModerationTable(error)) throw new Error(MODERATION_NOT_READY);
+  // mensagens escritas no gatilho do banco (ex.: "Você não pode denunciar o seu próprio conteúdo.")
+  if (error.code === 'P0001' && error.message) throw new Error(error.message);
+  throw error;
+}
+
+/** Ids das pessoas que eu bloqueei. */
+export async function fetchBlockedIds(): Promise<Set<string>> {
+  const userId = await requireUserId();
+  const { data, error } = await supabase.from('user_blocks').select('blocked_id').eq('blocker_id', userId);
+  if (isMissingModerationTable(error)) return new Set();
+  if (error) throw error;
+  return new Set((data || []).map((r: any) => r.blocked_id));
+}
+
+export async function isUserBlocked(targetUserId: string): Promise<boolean> {
+  return (await fetchBlockedIds()).has(targetUserId);
+}
+
+/** Perfis das pessoas que eu bloqueei (tela "Pessoas bloqueadas"). */
+export async function fetchBlockedUsers() {
+  const userId = await requireUserId();
+  const { data, error } = await supabase
+    .from('user_blocks')
+    .select('blocked_id, created_at')
+    .eq('blocker_id', userId)
+    .order('created_at', { ascending: false });
+  if (isMissingModerationTable(error)) return [];
+  if (error) throw error;
+  const ids = (data || []).map((r: any) => r.blocked_id);
+  if (ids.length === 0) return [];
+  const { data: profiles, error: profilesError } = await supabase.from('profiles').select('*').in('id', ids);
+  if (profilesError) throw profilesError;
+  const byId = new Map((profiles || []).map((row: any) => [row.id, mapProfileFromDb(row)]));
+  // quem não tem perfil aparece como "Usuário" (ainda dá para desbloquear)
+  return ids.map((id) => byId.get(id) || { id, displayName: 'Usuário', username: undefined, avatarUrl: undefined });
+}
+
+export async function blockUser(targetUserId: string) {
+  const userId = await requireUserId();
+  if (targetUserId === userId) throw new Error('Você não pode bloquear a si mesmo.');
+  const { error } = await supabase.from('user_blocks').insert({ blocker_id: userId, blocked_id: targetUserId });
+  if (!error || error.code === '23505') return; // já estava bloqueado
+  if (isMissingModerationTable(error)) throw new Error(MODERATION_NOT_READY);
+  throw error;
+}
+
+export async function unblockUser(targetUserId: string) {
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from('user_blocks')
+    .delete()
+    .eq('blocker_id', userId)
+    .eq('blocked_id', targetUserId);
+  if (isMissingModerationTable(error)) throw new Error(MODERATION_NOT_READY);
+  if (error) throw error;
+}
+
+/** Se o usuário logado é administrador (pode analisar denúncias). */
+export async function isAppAdmin(): Promise<boolean> {
+  const { data: auth } = await supabase.auth.getUser();
+  if (!auth?.user) return false;
+  const { data, error } = await supabase.rpc('is_app_admin');
+  if (error) {
+    if (!isMissingModerationTable(error)) console.error('Erro ao conferir administrador:', error);
+    return false;
+  }
+  return data === true;
+}
+
+export type ReportStatus = 'pending' | 'reviewed' | 'dismissed';
+
+export type AdminReport = {
+  id: string;
+  targetType: ReportTargetType;
+  targetId: string;
+  memorialId: string | null;
+  reason: ReportReason;
+  details: string | null;
+  contentSnapshot: string | null;
+  status: ReportStatus;
+  createdAt: string;
+  reporterId: string;
+  reporterName: string;
+  reportedUserId: string | null;
+  reportedUserName: string;
+};
+
+export const REPORTS_PAGE_SIZE = 50;
+
+/** Denúncias para o administrador (a RLS devolve vazio para quem não é). */
+export async function fetchReports(status: ReportStatus | 'all' = 'pending'): Promise<AdminReport[]> {
+  await requireUserId();
+  let request = supabase
+    .from('reports')
+    .select(
+      'id, target_type, target_id, memorial_id, reason, details, content_snapshot, status, created_at, reporter_id, reported_user_id'
+    )
+    .order('created_at', { ascending: false })
+    .limit(REPORTS_PAGE_SIZE);
+  if (status !== 'all') request = request.eq('status', status);
+  const { data, error } = await request;
+  if (isMissingModerationTable(error)) return [];
+  if (error) throw error;
+  const rows = data || [];
+  const names = await fetchProfilesByIds(
+    Array.from(new Set(rows.flatMap((r: any) => [r.reporter_id, r.reported_user_id]).filter(Boolean)))
+  );
+  return rows.map((r: any) => ({
+    id: r.id,
+    targetType: r.target_type,
+    targetId: r.target_id,
+    memorialId: r.memorial_id,
+    reason: r.reason,
+    details: r.details,
+    contentSnapshot: r.content_snapshot,
+    status: r.status,
+    createdAt: r.created_at,
+    reporterId: r.reporter_id,
+    reporterName: names[r.reporter_id] || 'Usuário',
+    reportedUserId: r.reported_user_id,
+    reportedUserName: (r.reported_user_id && names[r.reported_user_id]) || 'Usuário',
+  }));
+}
+
+export async function updateReportStatus(reportId: string, status: ReportStatus) {
+  await requireUserId();
+  const { data, error } = await supabase.from('reports').update({ status }).eq('id', reportId).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) throw new Error('Você não tem permissão para analisar denúncias.');
 }

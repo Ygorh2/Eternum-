@@ -95,3 +95,23 @@ describe('<PostComments />', () => {
     })
   })
 })
+
+describe('<PostComments /> — denunciar', () => {
+  it('mostra "Denunciar" só nos comentários que a pessoa pode denunciar', async () => {
+    const onReport = vi.fn()
+    const mine = { ...comment, id: 'c2', userId: 'me', authorName: 'Eu' }
+    render(
+      <PostComments
+        comments={[comment, mine]}
+        showInput={false}
+        canComment
+        onSubmit={vi.fn()}
+        onReport={onReport}
+        canReport={(c) => c.userId !== 'me'}
+      />
+    )
+    expect(screen.queryByLabelText('Denunciar comentário de Eu')).not.toBeInTheDocument()
+    await userEvent.click(screen.getByLabelText('Denunciar comentário de Ana'))
+    expect(onReport).toHaveBeenCalledWith(comment)
+  })
+})

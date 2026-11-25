@@ -1,7 +1,19 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, User, Loader2, Star, UserPlus, UserMinus, Grid3x3 } from 'lucide-react';
+import { ArrowLeft, User, Loader2, Star, UserPlus, UserMinus, MoreVertical, Flag, Ban, Grid3x3 } from 'lucide-react';
 import * as api from '../data/api';
+import type { ReportTarget } from '../utils/reports';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from './ui/alert-dialog';
 import { PostGrid, gridItemsFromPosts } from './PostGrid';
 
 interface Props {
@@ -10,6 +22,10 @@ interface Props {
   memorials: any[]; // todos os memoriais já carregados no app — filtramos os desse usuário
   onBack: () => void;
   onSelectMemorial: (id: string) => void;
+  /** Abre a janela de denúncia do perfil. */
+  onReport?: (target: ReportTarget) => void;
+  /** Avisado depois de bloquear/desbloquear (para recarregar o que aparece no app). */
+  onBlockedChange?: () => void;
   // Grade de fotos: publicações feitas por esta pessoa
   posts?: api.MemorialPost[];
   postsLoading?: boolean;
@@ -25,6 +41,8 @@ export function PublicProfile({
   memorials,
   onBack,
   onSelectMemorial,
+  onReport,
+  onBlockedChange,
   posts = [],
   postsLoading,
   postsHasMore,
@@ -38,9 +56,14 @@ export function PublicProfile({
   const [isLoading, setIsLoading] = useState(true);
   const [isToggling, setIsToggling] = useState(false);
   const [error, setError] = useState('');
+  const [actionError, setActionError] = useState('');
+  const [isBlocked, setIsBlocked] = useState(false);
+  const [confirmBlock, setConfirmBlock] = useState(false);
+  const [isBlocking, setIsBlocking] = useState(false);
 
   const isOwnProfile = currentUserId === userId;
-  const userMemorials = memorials.filter((m) => m.createdBy === userId);
+  const canModerate = !!currentUserId && currentUserId !== 'guest' && !isOwnProfile;
+  const userMemorials = isBlocked ? [] : memorials.filter((m) => m.createdBy === userId);
 
   useEffect(() => {
     let cancelled = false;
@@ -48,13 +71,15 @@ export function PublicProfile({
     Promise.all([
       api.fetchProfile(userId),
       api.fetchProfileStats(userId),
-      currentUserId && !isOwnProfile ? api.isFollowingUser(userId) : Promise.resolve(false),
+      canModerate ? api.isFollowingUser(userId) : Promise.resolve(false),
+      canModerate ? api.isUserBlocked(userId).catch(() => false) : Promise.resolve(false),
     ])
-      .then(([profileData, statsData, following]) => {
+      .then(([profileData, statsData, following, blocked]) => {
         if (cancelled) return;
         setProfile(profileData);
         setStats(statsData);
         setIsFollowing(following);
+        setIsBlocked(blocked);
       })
       .catch((err) => {
         console.error('Erro ao carregar perfil público:', err);
@@ -81,12 +106,38 @@ export function PublicProfile({
         setIsFollowing(true);
         setStats((s) => ({ ...s, followersCount: s.followersCount + 1 }));
       }
-    } catch (err) {
+    } catch (err: any) {
       console.error('Erro ao seguir/deixar de seguir:', err);
+      setActionError(err?.message || 'Não foi possível concluir. Tente de novo.');
     } finally {
       setIsToggling(false);
     }
   };
+
+  const handleBlock = async (block: boolean) => {
+    setIsBlocking(true);
+    setActionError('');
+    try {
+      if (block) {
+        await api.blockUser(userId);
+        // o bloqueio desfaz o "seguir" nos dois sentidos
+        if (isFollowing) setStats((s) => ({ ...s, followersCount: Math.max(0, s.followersCount - 1) }));
+        setIsFollowing(false);
+      } else {
+        await api.unblockUser(userId);
+      }
+      setIsBlocked(block);
+      onBlockedChange?.();
+    } catch (err: any) {
+      console.error('Erro ao bloquear/desbloquear:', err);
+      setActionError(err?.message || 'Não foi possível concluir. Tente de novo.');
+    } finally {
+      setIsBlocking(false);
+      setConfirmBlock(false);
+    }
+  };
+
+  const displayName = profile?.displayName || 'Usuário';
 
   return (
     <div className="h-full flex flex-col bg-gradient-to-b from-[#0F172A] to-[#1E1B4B] text-white">
@@ -94,7 +145,39 @@ export function PublicProfile({
         <button onClick={onBack} className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/70">
           <ArrowLeft size={24} />
         </button>
-        <h1 className="text-lg font-medium text-blue-100">Perfil</h1>
+        <h1 className="text-lg font-medium text-blue-100 flex-1">Perfil</h1>
+        {canModerate && !isLoading && !error && (
+          <DropdownMenu modal={false}>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                aria-label="Mais opções do perfil"
+                className="p-2 hover:bg-white/10 rounded-full transition-colors text-white/70"
+              >
+                <MoreVertical size={20} />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="bg-[#1E293B] border-white/10 text-white">
+              {onReport && (
+                <DropdownMenuItem
+                  onSelect={() => onReport({ type: 'user', id: userId })}
+                  className="cursor-pointer focus:bg-white/10 focus:text-white"
+                >
+                  <Flag size={14} className="text-red-300" />
+                  Denunciar perfil
+                </DropdownMenuItem>
+              )}
+              <DropdownMenuItem
+                onSelect={() => (isBlocked ? handleBlock(false) : setConfirmBlock(true))}
+                disabled={isBlocking}
+                className="cursor-pointer text-red-300 focus:bg-red-500/10 focus:text-red-200"
+              >
+                <Ban size={14} className="text-red-300" />
+                {isBlocked ? 'Desbloquear' : 'Bloquear'}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
+        )}
       </div>
 
       {isLoading ? (
@@ -118,7 +201,30 @@ export function PublicProfile({
           </h2>
           {profile?.username && <p className="text-blue-200/60 text-sm mb-4">@{profile.username}</p>}
 
-          {!isOwnProfile && currentUserId && (
+          {actionError && (
+            <p role="alert" className="mb-4 text-xs text-red-300 text-center">
+              {actionError}
+            </p>
+          )}
+
+          {isBlocked && (
+            <div className="w-full mb-6 p-4 rounded-2xl bg-white/5 border border-white/10 text-center">
+              <p className="text-sm text-white/80 mb-1">Você bloqueou esta pessoa.</p>
+              <p className="text-xs text-white/50 mb-3">
+                Você não vê o que ela publica, e ela não vê seus memoriais nem interage com você.
+              </p>
+              <button
+                type="button"
+                onClick={() => handleBlock(false)}
+                disabled={isBlocking}
+                className="px-5 py-2 rounded-xl bg-white/10 hover:bg-white/15 text-sm font-medium transition-colors disabled:opacity-60"
+              >
+                {isBlocking ? 'Desbloqueando...' : 'Desbloquear'}
+              </button>
+            </div>
+          )}
+
+          {canModerate && !isBlocked && (
             <button
               onClick={handleToggleFollow}
               disabled={isToggling}
@@ -161,7 +267,7 @@ export function PublicProfile({
             </div>
           </div>
 
-          {onOpenPost && (
+          {onOpenPost && !isBlocked && (
             <section className="w-full mb-8" aria-labelledby="public-profile-posts-title">
               <h3
                 id="public-profile-posts-title"
@@ -211,6 +317,34 @@ export function PublicProfile({
           )}
         </div>
       )}
+
+      <AlertDialog open={confirmBlock} onOpenChange={(open) => !open && !isBlocking && setConfirmBlock(false)}>
+        <AlertDialogContent className="bg-[#1E293B] text-white border-white/10">
+          <AlertDialogHeader>
+            <AlertDialogTitle>Bloquear {displayName}?</AlertDialogTitle>
+            <AlertDialogDescription className="text-white/60">
+              Vocês deixam de se seguir. Você não verá o que essa pessoa publica, e ela não verá seus memoriais, não
+              poderá comentar, reagir, homenagear nem seguir você. Ela não será avisada. Você pode desbloquear quando
+              quiser em Configurações.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel className="bg-transparent border-white/20 text-white hover:bg-white/10 hover:text-white">
+              Cancelar
+            </AlertDialogCancel>
+            <AlertDialogAction
+              onClick={(e) => {
+                e.preventDefault();
+                handleBlock(true);
+              }}
+              disabled={isBlocking}
+              className="bg-red-600 hover:bg-red-700 text-white"
+            >
+              {isBlocking ? 'Bloqueando...' : 'Bloquear'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

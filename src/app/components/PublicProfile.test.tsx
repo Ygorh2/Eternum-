@@ -6,6 +6,7 @@ vi.mock('../data/api', () => ({
   fetchProfile: vi.fn(async () => ({ displayName: 'Ana', username: 'ana' })),
   fetchProfileStats: vi.fn(async () => ({ tributesCount: 0, candlesCount: 0, followersCount: 2, followingCount: 1 })),
   isFollowingUser: vi.fn(async () => false),
+  isUserBlocked: vi.fn(async () => false),
   followUser: vi.fn(),
   unfollowUser: vi.fn(),
 }))
