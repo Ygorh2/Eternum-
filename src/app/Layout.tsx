@@ -22,6 +22,7 @@ export type AppContextType = {
   handleLogout: () => void;
   handleAddMemorial: (m: any) => void;
   handleDeleteMemorial: (id: string) => void;
+  handleUpdateMemorial: (id: string, changes: any) => Promise<any>;
   handleAddTribute: (t: any) => void;
 };
 
@@ -149,6 +150,17 @@ export function Layout() {
     }
   };
 
+  /** Salva a edição no banco e atualiza a lista local. Rejeita em caso de erro. */
+  const handleUpdateMemorial = async (id: string, changes: any) => {
+    if (!user || user.isGuest) {
+      throw new Error('Você precisa estar logado para editar um memorial.');
+    }
+    const saved = await api.updateMemorial(id, changes);
+    // Mantém campos que só existem na tela (ex.: galeria) e aplica os do banco
+    setMemorials((prev: any[]) => prev.map((m) => (m.id === id ? { ...m, ...saved } : m)));
+    return saved;
+  };
+
   const handleAddTribute = async (newTribute: any) => {
     if (!user || user.isGuest) {
       setMemorialsError('Você precisa estar logado (não como Visitante) para deixar um tributo.');
@@ -182,6 +194,7 @@ export function Layout() {
     handleLogout,
     handleAddMemorial,
     handleDeleteMemorial,
+    handleUpdateMemorial,
     handleAddTribute,
   };
 
