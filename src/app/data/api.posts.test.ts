@@ -27,6 +27,9 @@ vi.mock('/utils/supabase/client', () => {
       auth: { getUser: async () => ({ data: { user: { id: 'me' } }, error: null }) },
       storage: { from: () => storageBucket },
       from: () => ({
+        delete: () => ({
+          eq: () => ({ select: async () => ({ data: [{ id: 'p1' }], error: null }) }),
+        }),
         insert(row: any) {
           state.inserted.push(row)
           return {
@@ -43,7 +46,7 @@ vi.mock('/utils/supabase/client', () => {
   }
 })
 
-import { createMemorialPost, storagePathFromPublicUrl } from './api'
+import { createMemorialPost, deleteMemorialPost, storagePathFromPublicUrl } from './api'
 
 const photo = () => new File(['x'], 'foto 1.jpg', { type: 'image/jpeg' })
 const video = () => new File(['x'], 'v.mp4', { type: 'video/mp4' })
@@ -87,5 +90,35 @@ describe('storagePathFromPublicUrl', () => {
       storagePathFromPublicUrl('https://proj.supabase.co/storage/v1/object/public/memorial-media/me/posts/m1/a%20b.jpg'),
     ).toBe('me/posts/m1/a b.jpg')
     expect(storagePathFromPublicUrl('https://outro-site.com/a.jpg')).toBeNull()
+  })
+})
+
+describe('deleteMemorialPost', () => {
+  const base = 'https://proj.supabase.co/storage/v1/object/public/memorial-media/'
+  beforeEach(() => {
+    state.removed = []
+  })
+
+  it('autor apaga também os arquivos da própria pasta de publicações', async () => {
+    await deleteMemorialPost({
+      id: 'p1',
+      memorialId: 'm1',
+      authorId: 'me',
+      media: [
+        { url: `${base}me/posts/m1/a.jpg`, type: 'image' },
+        { url: `${base}me/memorials/capa.jpg`, type: 'image' },
+      ],
+    })
+    expect(state.removed).toEqual([['me/posts/m1/a.jpg']])
+  })
+
+  it('dono do memorial apagando publicação de outra pessoa NÃO apaga arquivos', async () => {
+    await deleteMemorialPost({
+      id: 'p1',
+      memorialId: 'm1',
+      authorId: 'atacante',
+      media: [{ url: `${base}me/memorials/capa.jpg`, type: 'image' }],
+    })
+    expect(state.removed).toEqual([])
   })
 })

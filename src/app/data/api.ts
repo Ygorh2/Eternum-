@@ -291,14 +291,21 @@ export async function createMemorialPost(input: {
   }
 }
 
-export async function deleteMemorialPost(post: Pick<MemorialPost, 'id' | 'media'>) {
+export async function deleteMemorialPost(post: Pick<MemorialPost, 'id' | 'media' | 'authorId' | 'memorialId'>) {
+  const userId = await requireUserId();
   // .select() devolve as linhas apagadas: se a RLS bloquear, volta vazio (sem erro)
   const { data, error } = await supabase.from('memorial_posts').delete().eq('id', post.id).select('id');
   if (error) throw error;
   if (!data || data.length === 0) throw new Error('Você não tem permissão para apagar esta publicação.');
-  // Tenta apagar os arquivos também. A policy do Storage só deixa apagar os da
-  // própria pasta; se quem apagou foi o dono do memorial, os arquivos ficam.
-  const paths = post.media.map((m) => storagePathFromPublicUrl(m.url)).filter((p): p is string => !!p);
+  // Apaga os arquivos só quando quem apaga é o próprio autor, e só os da pasta
+  // de publicações dele. As URLs vêm da linha (escritas por quem publicou): se o
+  // dono do memorial apagasse por elas, alguém poderia apontar para arquivos do
+  // dono (foto, capa) e fazê-lo apagá-los sem querer.
+  if (post.authorId !== userId) return;
+  const allowedPrefix = `${userId}/posts/${post.memorialId}/`;
+  const paths = post.media
+    .map((m) => storagePathFromPublicUrl(m.url))
+    .filter((p): p is string => !!p && p.startsWith(allowedPrefix) && !p.includes('..'));
   if (paths.length > 0) {
     await supabase.storage.from(MEDIA_BUCKET).remove(paths).catch(() => undefined);
   }
