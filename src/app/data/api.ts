@@ -1,4 +1,5 @@
 import { supabase } from '/utils/supabase/client';
+import type { FeedQuery, FollowingScope } from '../utils/feed';
 import { MAX_CAPTION_LENGTH, MAX_POST_MEDIA } from '../utils/mediaValidation';
 
 // ------------------------------------------------------------------
@@ -224,6 +225,140 @@ export async function createTribute(input: any) {
 }
 
 // ------------------------------------------------------------------
+// Feed paginado (abas "Seguindo" e "Explorar")
+//
+// Cada função devolve UMA página de uma fonte do feed, da mais nova para a
+// mais antiga, com no máximo `limit` linhas criadas antes de `before`.
+// A junção das fontes fica em src/app/data/feedSources.ts.
+// A privacidade continua 100% na RLS: memoriais privados (e as homenagens
+// deles) simplesmente não voltam para quem não tem acesso.
+// ------------------------------------------------------------------
+
+/** Quantos ids cabem num filtro `in.(...)` sem deixar a URL grande demais. */
+const FEED_ID_CHUNK = 80;
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/** Só deixa passar UUIDs (evita montar filtros do PostgREST com texto arbitrário). */
+function onlyUuids(ids: string[]): string[] {
+  return Array.from(new Set(ids.filter((id) => typeof id === 'string' && UUID_RE.test(id))));
+}
+
+/** Ordena por data desc (id desc no empate) e corta em `limit`. */
+function newestFirst<T extends { id: string; created_at: string }>(rows: T[], limit: number): T[] {
+  const seen = new Set<string>();
+  return rows
+    .filter((r) => (seen.has(r.id) ? false : (seen.add(r.id), true)))
+    .sort((a, b) => {
+      const d = new Date(b.created_at).getTime() - new Date(a.created_at).getTime();
+      return d !== 0 ? d : a.id < b.id ? 1 : a.id > b.id ? -1 : 0;
+    })
+    .slice(0, limit);
+}
+
+/** Pessoas (incluindo o próprio usuário) e memoriais que entram na aba "Seguindo". */
+export async function fetchFollowingScope(userId: string): Promise<FollowingScope> {
+  const [follows, memorialFollows] = await Promise.all([
+    supabase.from('follows').select('following_id').eq('follower_id', userId),
+    supabase.from('memorial_follows').select('memorial_id').eq('user_id', userId),
+  ]);
+  if (follows.error) throw follows.error;
+  // memorial_follows vem da migration 0006; se ela faltar, segue só com pessoas
+  if (memorialFollows.error) console.error('Erro ao carregar memoriais seguidos:', memorialFollows.error);
+  return {
+    userIds: onlyUuids([userId, ...(follows.data || []).map((r: any) => r.following_id)]),
+    memorialIds: onlyUuids((memorialFollows.data || []).map((r: any) => r.memorial_id)),
+  };
+}
+
+export async function fetchFeedMemorialsPage(q: FeedQuery) {
+  const base = () => {
+    let req = supabase
+      .from('memorials')
+      .select('*')
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(q.limit);
+    if (q.before) req = req.lt('created_at', q.before);
+    if (q.type !== 'all') req = req.eq('type', q.type);
+    return req;
+  };
+
+  let rows: any[];
+  if (q.scope === 'following') {
+    const userIds = onlyUuids(q.following?.userIds || []);
+    const memorialIds = onlyUuids(q.following?.memorialIds || []);
+    const requests = [
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('created_by', ids)),
+      ...chunk(memorialIds, FEED_ID_CHUNK).map((ids) => base().in('id', ids)),
+    ];
+    const results = await Promise.all(requests);
+    rows = [];
+    for (const r of results) {
+      if (r.error) throw r.error;
+      rows.push(...(r.data || []));
+    }
+    rows = newestFirst(rows, q.limit);
+  } else {
+    const { data, error } = await base();
+    if (error) throw error;
+    rows = data || [];
+  }
+  return rows.map(mapMemorialFromDb);
+}
+
+/** Homenagens com os dados do memorial embutidos (para o cabeçalho do post). */
+export async function fetchFeedTributesPage(q: FeedQuery) {
+  const base = () => {
+    let req = supabase
+      .from('tributes')
+      .select('*, memorial:memorials!inner(id, name, photo, type, created_by)')
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(q.limit);
+    if (q.before) req = req.lt('created_at', q.before);
+    if (q.type !== 'all') req = req.eq('memorial.type', q.type);
+    return req;
+  };
+
+  let rows: any[];
+  if (q.scope === 'following') {
+    const userIds = onlyUuids(q.following?.userIds || []);
+    const memorialIds = onlyUuids(q.following?.memorialIds || []);
+    const requests = [
+      // escritas por mim ou por quem eu sigo
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('author_id', ids)),
+      // deixadas nos memoriais criados por mim ou por quem eu sigo
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('memorial.created_by', ids)),
+      // deixadas nos memoriais que eu sigo
+      ...chunk(memorialIds, FEED_ID_CHUNK).map((ids) => base().in('memorial_id', ids)),
+    ];
+    const results = await Promise.all(requests);
+    rows = [];
+    for (const r of results) {
+      if (r.error) throw r.error;
+      rows.push(...(r.data || []));
+    }
+    rows = newestFirst(rows, q.limit);
+  } else {
+    const { data, error } = await base();
+    if (error) throw error;
+    rows = data || [];
+  }
+
+  return rows.map((row: any) => ({
+    ...mapTributeFromDb(row),
+    createdAt: row.created_at,
+    memorial: {
+      id: row.memorial?.id ?? row.memorial_id,
+      name: row.memorial?.name || '',
+      photo: row.memorial?.photo || '',
+      type: row.memorial?.type === 'pet' ? ('pet' as const) : ('person' as const),
+      createdBy: row.memorial?.created_by,
+    },
+  }));
+}
+
+// ------------------------------------------------------------------
 // Publicações com foto/vídeo e legenda (tabela memorial_posts — migration 0007)
 // ------------------------------------------------------------------
 
@@ -342,6 +477,70 @@ export async function deleteMemorialPost(post: Pick<MemorialPost, 'id' | 'media'
   if (paths.length > 0) {
     await supabase.storage.from(MEDIA_BUCKET).remove(paths).catch(() => undefined);
   }
+}
+
+/** Publicações (memorial_posts, migration 0007) com o memorial embutido. */
+/**
+ * Tabela ainda não criada (migration não aplicada). Assim o feed continua
+ * funcionando com memoriais e homenagens enquanto a 0007 não for rodada.
+ */
+function isMissingTable(error: any): boolean {
+  if (!error) return false;
+  if (error.code === '42P01' || error.code === 'PGRST205') {
+    console.warn('Publicações ainda não disponíveis (rode a migration 0007):', error.message);
+    return true;
+  }
+  return false;
+}
+
+export async function fetchFeedMemorialPostsPage(q: FeedQuery) {
+  const base = () => {
+    let req = supabase
+      .from('memorial_posts')
+      .select(`${POST_COLUMNS}, memorial:memorials!inner(id, name, photo, type, created_by)`)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(q.limit);
+    if (q.before) req = req.lt('created_at', q.before);
+    if (q.type !== 'all') req = req.eq('memorial.type', q.type);
+    return req;
+  };
+
+  let rows: any[];
+  if (q.scope === 'following') {
+    const userIds = onlyUuids(q.following?.userIds || []);
+    const memorialIds = onlyUuids(q.following?.memorialIds || []);
+    const requests = [
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('author_id', ids)),
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('memorial.created_by', ids)),
+      ...chunk(memorialIds, FEED_ID_CHUNK).map((ids) => base().in('memorial_id', ids)),
+    ];
+    const results = await Promise.all(requests);
+    rows = [];
+    for (const r of results) {
+      if (isMissingTable(r.error)) return [];
+      if (r.error) throw r.error;
+      rows.push(...(r.data || []));
+    }
+    rows = newestFirst(rows, q.limit);
+  } else {
+    const { data, error } = await base();
+    if (isMissingTable(error)) return [];
+    if (error) throw error;
+    rows = data || [];
+  }
+
+  return rows.map((row: any) => ({
+    // o nome do autor é preenchido no feed (busca de perfis em lote)
+    ...mapPostFromDb(row, ''),
+    memorial: {
+      id: row.memorial?.id ?? row.memorial_id,
+      name: row.memorial?.name || '',
+      photo: row.memorial?.photo || '',
+      type: row.memorial?.type === 'pet' ? ('pet' as const) : ('person' as const),
+      createdBy: row.memorial?.created_by,
+    },
+  }));
 }
 
 // ------------------------------------------------------------------

@@ -22,6 +22,16 @@ import { People } from './components/People';
 import { CreatePost } from './components/CreatePost';
 import { getReactions, withComment, withReaction } from './utils/postInteractions';
 import { tributeIdFromPostKey } from './utils/postKeys';
+import {
+  appendRows,
+  memorialIdsOf,
+  type FeedQuery,
+  type FeedRow,
+  type FeedScope,
+  type FeedTypeFilter,
+  type FollowingScope,
+} from './utils/feed';
+import { authorIdsOf, fetchFeedPage, rowsToPosts } from './data/feedSources';
 
 // ------------------------------------------------------------------
 // Hooks de interação (velas, seguir memorial, reações e comentários).
@@ -39,24 +49,36 @@ function usePostInteractions(memorialIds: string[], user: any) {
   const [error, setError] = useState<string | null>(null);
   const pending = useRef(new Set<string>());
 
+  // Memoriais cujas interações já foram carregadas (para este usuário). No feed
+  // paginado a lista só cresce, então buscamos apenas os memoriais novos.
+  const loaded = useRef<{ userId?: string; ids: Set<string> }>({ userId, ids: new Set() });
+
   useEffect(() => {
-    if (!idsKey) {
+    const ids = idsKey ? idsKey.split(',') : [];
+    const sameUser = loaded.current.userId === userId;
+    const isGrowing = sameUser && Array.from(loaded.current.ids).every((id) => ids.includes(id));
+    if (!isGrowing) {
+      loaded.current = { userId, ids: new Set() };
       setInteractions(EMPTY_INTERACTIONS);
-      return;
     }
-    let cancelled = false;
+    const missing = ids.filter((id) => !loaded.current.ids.has(id));
+    if (missing.length === 0) return;
+    missing.forEach((id) => loaded.current.ids.add(id));
+    const requestedFor = loaded.current;
     api
-      .fetchPostInteractions(idsKey.split(','), userId)
+      .fetchPostInteractions(missing, userId)
       .then((data) => {
-        if (!cancelled) setInteractions(data);
+        if (loaded.current !== requestedFor) return; // usuário/lista mudou no meio
+        setInteractions((prev) => ({
+          reactions: { ...prev.reactions, ...data.reactions },
+          comments: { ...prev.comments, ...data.comments },
+        }));
       })
       .catch((err) => {
         console.error('Erro ao carregar reações e comentários:', err);
-        if (!cancelled) setError('Não foi possível carregar reações e comentários.');
+        missing.forEach((id) => requestedFor.ids.delete(id));
+        if (loaded.current === requestedFor) setError('Não foi possível carregar reações e comentários.');
       });
-    return () => {
-      cancelled = true;
-    };
   }, [idsKey, userId]);
 
   const toggleReaction = async (memorialId: string, postKey: string, reaction: api.ReactionType) => {
@@ -262,72 +284,152 @@ export function ProtectedRoute({ children }: { children: React.ReactNode }) {
   return <>{children}</>;
 }
 
-export function ConnectedFeed() {
-  const { memorials, tributes, user, setIsMenuOpen } = useApp();
-  const navigate = useNavigate();
+const FEED_PAGE_SIZE = 10;
+
+/**
+ * Feed paginado (estilo Instagram): carrega 10 itens por vez e mais quando a
+ * pessoa chega ao fim da lista. Duas abas:
+ *  - "Seguindo": o que eu criei/escrevi + pessoas e memoriais que eu sigo;
+ *  - "Explorar": tudo que a RLS me deixa ver (visitante só vê públicos).
+ */
+function useFeed(user: any) {
   const isGuest = !user || user.isGuest;
+  const userId = isGuest ? undefined : (user.id as string);
 
-  // Quem o usuário segue (null = ainda carregando)
-  const [followingIds, setFollowingIds] = useState<Set<string> | null>(null);
-  const [creatorNames, setCreatorNames] = useState<Record<string, string>>({});
+  const [scope, setScope] = useState<FeedScope>(isGuest ? 'explore' : 'following');
+  const [type, setType] = useState<FeedTypeFilter>('all');
+  const [rows, setRows] = useState<FeedRow[]>([]);
+  const [cursor, setCursor] = useState<string | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [authorNames, setAuthorNames] = useState<Record<string, string>>({});
+  const [reloadKey, setReloadKey] = useState(0);
 
-  useEffect(() => {
-    if (isGuest) {
-      setFollowingIds(new Set());
-      return;
+  const effectiveScope: FeedScope = isGuest ? 'explore' : scope;
+  // Cada nova consulta (aba/filtro/usuário) ganha um número; respostas de
+  // consultas antigas são ignoradas.
+  const requestId = useRef(0);
+  const followingRef = useRef<{ userId?: string; scope: FollowingScope } | null>(null);
+
+  const buildQuery = async (before?: string): Promise<FeedQuery> => {
+    const q: FeedQuery = { scope: effectiveScope, type, before, limit: FEED_PAGE_SIZE };
+    if (effectiveScope === 'following' && userId) {
+      if (followingRef.current?.userId !== userId) {
+        followingRef.current = { userId, scope: await api.fetchFollowingScope(userId) };
+      }
+      q.following = followingRef.current.scope;
     }
-    let cancelled = false;
-    api
-      .fetchFollowingIds(user.id)
-      .then((ids) => {
-        if (!cancelled) setFollowingIds(ids);
-      })
-      .catch((err) => {
-        console.error('Erro ao carregar quem você segue:', err);
-        if (!cancelled) setFollowingIds(new Set());
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [user?.id, isGuest]);
+    return q;
+  };
 
-  // Feed estilo Instagram: só os memoriais que eu criei ou de quem eu sigo.
-  // (Visitante, que não tem conta, vê todos para poder explorar.)
-  const feedMemorials = useMemo(() => {
-    if (isGuest) return memorials;
-    if (!followingIds) return [];
-    return memorials.filter((m: any) => m.createdBy === user.id || followingIds.has(m.createdBy));
-  }, [memorials, followingIds, isGuest, user?.id]);
+  // Primeira página (e recarregar ao trocar aba, filtro ou usuário)
+  useEffect(() => {
+    const id = ++requestId.current;
+    // Ao voltar para a aba, recalcula quem eu sigo (posso ter seguido alguém)
+    followingRef.current = null;
+    setRows([]);
+    setCursor(null);
+    setHasMore(false);
+    setError(null);
+    setLoading(true);
+    (async () => {
+      try {
+        const page = await fetchFeedPage(await buildQuery());
+        if (requestId.current !== id) return;
+        setRows(page.rows);
+        setCursor(page.nextCursor);
+        setHasMore(!!page.nextCursor);
+      } catch (err: any) {
+        console.error('Erro ao carregar o feed:', err);
+        if (requestId.current === id) setError('Não foi possível carregar o feed.');
+      } finally {
+        if (requestId.current === id) setLoading(false);
+      }
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [effectiveScope, type, userId, reloadKey]);
 
-  // Nomes reais dos autores dos memoriais exibidos
-  const creatorIdsKey = useMemo(
-    () => Array.from(new Set(feedMemorials.map((m: any) => m.createdBy).filter(Boolean))).sort().join(','),
-    [feedMemorials]
+  const loadMore = async () => {
+    if (loading || loadingMore || !hasMore || !cursor) return;
+    const id = requestId.current;
+    setLoadingMore(true);
+    setError(null);
+    try {
+      const page = await fetchFeedPage(await buildQuery(cursor));
+      if (requestId.current !== id) return;
+      setRows((prev) => appendRows(prev, page.rows));
+      setCursor(page.nextCursor);
+      setHasMore(!!page.nextCursor);
+    } catch (err: any) {
+      console.error('Erro ao carregar mais posts:', err);
+      if (requestId.current === id) setError('Não foi possível carregar mais posts.');
+    } finally {
+      if (requestId.current === id) setLoadingMore(false);
+    }
+  };
+
+  // Nomes reais dos autores dos memoriais (busca só os que ainda não temos)
+  const missingAuthorsKey = useMemo(
+    () => authorIdsOf(rows).filter((id) => !(id in authorNames)).sort().join(','),
+    [rows, authorNames]
   );
   useEffect(() => {
-    if (!creatorIdsKey) return;
+    if (!missingAuthorsKey) return;
     let cancelled = false;
+    const ids = missingAuthorsKey.split(',');
     api
-      .fetchProfilesByIds(creatorIdsKey.split(','))
+      .fetchProfilesByIds(ids)
       .then((names) => {
-        if (!cancelled) setCreatorNames(names);
+        if (cancelled) return;
+        // ids sem perfil ficam com '' para não buscar de novo
+        const filled = Object.fromEntries(ids.map((id) => [id, names[id] || '']));
+        setAuthorNames((prev) => ({ ...prev, ...filled }));
       })
       .catch((err) => console.error('Erro ao carregar nomes dos autores:', err));
     return () => {
       cancelled = true;
     };
-  }, [creatorIdsKey]);
+  }, [missingAuthorsKey]);
 
-  const feedMemorialIds = useMemo(() => feedMemorials.map((m: any) => m.id), [feedMemorials]);
+  const posts = useMemo(
+    () =>
+      rowsToPosts(rows, {
+        authorName: (id) =>
+          (id && authorNames[id]) || (id && id === userId ? user?.name : undefined) || undefined,
+      }),
+    [rows, authorNames, userId, user?.name]
+  );
+
+  return {
+    posts,
+    scope: effectiveScope,
+    onScopeChange: setScope,
+    canUseFollowing: !isGuest,
+    typeFilter: type,
+    onTypeFilterChange: setType,
+    loading,
+    loadingMore,
+    hasMore,
+    feedError: error,
+    onLoadMore: loadMore,
+    onRetry: () => (rows.length > 0 ? loadMore() : setReloadKey((k) => k + 1)),
+  };
+}
+
+export function ConnectedFeed() {
+  const { memorials, user, setIsMenuOpen } = useApp();
+  const navigate = useNavigate();
+
+  const feed = useFeed(user);
+  const feedMemorialIds = useMemo(() => memorialIdsOf(feed.posts), [feed.posts]);
   const postInteractions = usePostInteractions(feedMemorialIds, user);
-  const { posts } = useMemorialPosts(feedMemorialIds);
 
   return (
     <Feed
-      memorials={feedMemorials}
-      posts={posts}
-      creatorNames={creatorNames}
-      tributes={tributes}
+      memorials={memorials}
+      {...feed}
       {...postInteractions}
       onSelectMemorial={(id) => navigate(`/memorial/${id}`)}
       onCreate={(type) => navigate(`/create-memorial?type=${type || 'person'}`)}
