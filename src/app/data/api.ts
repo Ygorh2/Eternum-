@@ -120,7 +120,8 @@ export async function createMemorial(input: any) {
       death_date: input.deathDate || null,
       quote: input.quote || null,
       bio: input.bio || null,
-      access_group: input.accessGroup || 'public',
+      // Privado por padrão, como a tela de criação promete
+      access_group: input.accessGroup || 'family',
       add_to_sky: input.addToSky ?? true,
       lat: input.lat ?? null,
       lng: input.lng ?? null,
