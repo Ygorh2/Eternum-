@@ -2,6 +2,10 @@ import React, { useState } from 'react';
 import { formatDate, parseLocalDate } from '../utils/dateUtils';
 import { motion, AnimatePresence } from 'motion/react';
 import { ArrowLeft, Share2, Flame, Heart, BookOpen, Send, Sparkles, MessageSquare, User, MoreVertical, Play, UserPlus } from 'lucide-react';
+import type { PostInteractions, ReactionType } from '../data/api';
+import { getReactions } from '../utils/postInteractions';
+import { galleryPostKey, tributePostKey } from '../utils/postKeys';
+import { PostComments } from './PostComments';
 
 interface Props {
   memorial: any;
@@ -10,12 +14,29 @@ interface Props {
   onViewLivingMemory: () => void;
   onWriteTribute: () => void;
   onViewProfile?: (userId: string) => void;
+  // Reações e comentários (salvos no Supabase)
+  interactions?: PostInteractions;
+  canInteract?: boolean;
+  interactionError?: string | null;
+  onToggleReaction?: (memorialId: string, postKey: string, reaction: ReactionType) => void;
+  onAddComment?: (memorialId: string, postKey: string, text: string) => Promise<void>;
+  onDismissError?: () => void;
+  // Velas
+  candles?: { count: number; litByMe: boolean };
+  candleError?: string | null;
+  onLightCandle?: () => void;
+  // Seguir memorial
+  follow?: { count: number; isFollowing: boolean };
+  followError?: string | null;
+  onToggleFollow?: () => void;
 }
 
 // Tribute Post interface for Instagram-style posts
 interface TributePost {
   id: string;
+  postKey: string;
   author: {
+    id?: string;
     name: string;
     photo?: string;
   };
@@ -25,50 +46,55 @@ interface TributePost {
     type: 'photo' | 'video';
     url: string;
   };
-  reactions: {
-    amen: number;
-    love: number;
-  };
-  comments: Array<{
-    id: string;
-    user: string;
-    text: string;
-    date: string;
-  }>;
 }
 
-export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory, onWriteTribute, onViewProfile }: Props) {
+const NO_INTERACTIONS: PostInteractions = { reactions: {}, comments: {} };
+
+export function MemorialDetail({
+  memorial,
+  tributes,
+  onBack,
+  onViewLivingMemory,
+  onWriteTribute,
+  onViewProfile,
+  interactions = NO_INTERACTIONS,
+  canInteract = false,
+  interactionError,
+  onToggleReaction,
+  onAddComment,
+  onDismissError,
+  candles = { count: 0, litByMe: false },
+  candleError,
+  onLightCandle,
+  follow = { count: 0, isFollowing: false },
+  followError,
+  onToggleFollow,
+}: Props) {
   const [activeTab, setActiveTab] = useState<'tributes' | 'living-memory' | 'about'>('tributes');
-  
-  // Follow state
-  const [isFollowing, setIsFollowing] = useState(false);
-  const [followersCount, setFollowersCount] = useState(memorial.followers || 142);
+  const isFollowing = follow.isFollowing;
+  const followersCount = follow.count;
+  const notice = interactionError || candleError || followError;
 
   // Transform tributes into Instagram-style posts
   const tributePosts: TributePost[] = tributes.map((tribute, index) => ({
     id: tribute.id,
+    postKey: tributePostKey(tribute.id),
     author: typeof tribute.author === 'object' 
       ? tribute.author 
       : { name: tribute.author, photo: undefined },
     content: tribute.content || tribute.text,
     date: tribute.date,
     media: tribute.media || (tribute.image ? { type: 'photo' as const, url: tribute.image } : undefined),
-    reactions: {
-      amen: 0,
-      love: 0,
-    },
-    comments: []
   }));
 
   // Fotos e vídeos da galeria do memorial viram posts, como no Instagram
   const galleryPosts: TributePost[] = (memorial.gallery || []).map((item: any, i: number) => ({
     id: `gallery-${memorial.id}-${i}`,
+    postKey: galleryPostKey(item.url),
     author: { name: 'Administrador' },
     content: '',
     date: memorial.createdAt || '',
     media: { type: item.type === 'video' ? ('video' as const) : ('photo' as const), url: item.url },
-    reactions: { amen: 0, love: 0 },
-    comments: [],
   }));
 
   // Posts da galeria + homenagens, do mais recente para o mais antigo
@@ -76,48 +102,10 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
     (a, b) => (parseLocalDate(b.date)?.getTime() ?? 0) - (parseLocalDate(a.date)?.getTime() ?? 0)
   );
 
-  // State for post reactions and comments
-  const [postReactions, setPostReactions] = useState<Record<string, { amen: boolean; love: boolean }>>({});
-  const [postComments, setPostComments] = useState<Record<string, Array<any>>>({});
   const [activeCommentPost, setActiveCommentPost] = useState<string | null>(null);
-  const [commentText, setCommentText] = useState('');
 
-  const handlePostReaction = (postId: string, reaction: 'amen' | 'love') => {
-    setPostReactions(prev => ({
-      ...prev,
-      [postId]: {
-        ...prev[postId],
-        [reaction]: !prev[postId]?.[reaction]
-      }
-    }));
-  };
-
-  const handleAddComment = (postId: string) => {
-    if (!commentText.trim()) return;
-    
-    // Offensive word filter (Mock)
-    const forbidden = ['ódio', 'feio', 'estúpido', 'idiota'];
-    const hasForbidden = forbidden.some(word => commentText.toLowerCase().includes(word));
-    
-    if (hasForbidden) {
-      alert("Seu comentário contém palavras que violam nossa política de respeito.");
-      return;
-    }
-
-    setPostComments(prev => ({
-      ...prev,
-      [postId]: [
-        ...prev[postId] || [],
-        { id: Date.now(), user: 'Você', text: commentText, date: 'Agora' }
-      ]
-    }));
-    setCommentText('');
-    setActiveCommentPost(null);
-  };
-
-  const handleFollow = () => {
-    setIsFollowing(!isFollowing);
-    setFollowersCount(isFollowing ? followersCount - 1 : followersCount + 1);
+  const handlePostReaction = (post: TributePost, reaction: ReactionType) => {
+    onToggleReaction?.(memorial.id, post.postKey, reaction);
   };
 
   return (
@@ -194,12 +182,18 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
             <span className="text-xl font-semibold text-white">{followersCount}</span>
             <span className="text-xs text-white/50 font-light">Seguidores</span>
           </div>
+          <div className="w-px h-8 bg-white/10"></div>
+          <div className="flex flex-col">
+            <span className="text-xl font-semibold text-white">{candles.count}</span>
+            <span className="text-xs text-white/50 font-light">Velas</span>
+          </div>
         </div>
 
         {/* Action Buttons */}
         <div className="flex gap-3">
           <button 
-            onClick={handleFollow}
+            onClick={onToggleFollow}
+            aria-pressed={isFollowing}
             className={`flex-1 py-2.5 rounded-xl font-medium text-sm transition-all shadow-lg flex items-center justify-center gap-2 ${
               isFollowing 
                 ? 'bg-white/10 border border-white/20 text-white/80 hover:bg-white/15' 
@@ -208,6 +202,19 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
           >
             <UserPlus size={16} />
             {isFollowing ? 'Seguindo' : 'Seguir'}
+          </button>
+          <button
+            onClick={onLightCandle}
+            disabled={candles.litByMe}
+            aria-label={candles.litByMe ? 'Você já acendeu uma vela' : 'Acender vela'}
+            title={candles.litByMe ? 'Você já acendeu uma vela' : 'Acender vela'}
+            className={`px-3.5 py-2.5 rounded-xl border backdrop-blur-md flex items-center justify-center transition-colors shadow-lg ${
+              candles.litByMe
+                ? 'bg-amber-500/25 border-amber-400/40 text-amber-200 cursor-default'
+                : 'bg-white/5 border-white/15 text-white/70 hover:bg-amber-500/15 hover:text-amber-200'
+            }`}
+          >
+            <Flame size={18} className={candles.litByMe ? 'fill-amber-300/60' : ''} />
           </button>
           <button 
             onClick={onViewLivingMemory}
@@ -218,6 +225,17 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
           </button>
         </div>
       </div>
+
+      {notice && (
+        <div role="alert" className="mx-6 mb-2 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-400/30 text-amber-100 text-xs flex items-center justify-between gap-2">
+          <span>{notice}</span>
+          {interactionError && onDismissError && (
+            <button onClick={onDismissError} className="text-amber-200/80 hover:text-amber-100" aria-label="Fechar aviso">
+              ✕
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Tabs */}
       <div className="flex border-b border-white/10 px-6 mt-2">
@@ -263,7 +281,10 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
                  Escrever uma homenagem
                </button>
 
-               {allPosts.map((post) => (
+               {allPosts.map((post) => {
+                 const reactions = getReactions(interactions, post.postKey);
+                 const comments = interactions.comments[post.postKey] || [];
+                 return (
                  <div key={post.id} className="bg-[#1E293B]/60 border border-white/10 rounded-2xl overflow-hidden shadow-lg hover:shadow-xl transition-shadow">
                    {/* Post Header - Instagram Style */}
                    <div className="flex items-center justify-between p-4 border-b border-white/5">
@@ -302,37 +323,41 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
                      {/* Reactions Bar */}
                      <div className="flex items-center gap-4 mb-3 pb-3 border-b border-white/5">
                        <button
-                         onClick={() => handlePostReaction(post.id, 'love')}
+                         onClick={() => handlePostReaction(post, 'love')}
+                         aria-pressed={reactions.mine.love}
                          className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
-                          postReactions[post.id]?.love 
+                          reactions.mine.love 
                             ? 'bg-pink-500/20 text-pink-300 border border-pink-500/30' 
                             : 'bg-white/5 text-white/60 hover:bg-white/10 border border-transparent'
                         }`}
                        >
-                         <Heart size={18} className={postReactions[post.id]?.love ? 'fill-pink-300' : ''} />
-                         <span className="text-xs font-medium">{post.reactions.love + (postReactions[post.id]?.love ? 1 : 0)}</span>
+                         <Heart size={18} className={reactions.mine.love ? 'fill-pink-300' : ''} />
+                         <span className="text-xs font-medium">{reactions.love}</span>
                          <span className="text-xs">Amor</span>
                        </button>
                        
                        <button
-                         onClick={() => handlePostReaction(post.id, 'amen')}
+                         onClick={() => handlePostReaction(post, 'amen')}
+                         aria-pressed={reactions.mine.amen}
                          className={`flex items-center gap-2 px-3 py-2 rounded-lg transition-all ${
-                          postReactions[post.id]?.amen 
+                          reactions.mine.amen 
                             ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30' 
                             : 'bg-white/5 text-white/60 hover:bg-white/10 border border-transparent'
                         }`}
                        >
                          <span className="text-base">🙏</span>
-                         <span className="text-xs font-medium">{post.reactions.amen + (postReactions[post.id]?.amen ? 1 : 0)}</span>
+                         <span className="text-xs font-medium">{reactions.amen}</span>
                          <span className="text-xs">Amém</span>
                        </button>
 
                        <button
                          onClick={() => setActiveCommentPost(activeCommentPost === post.id ? null : post.id)}
+                         aria-label="Comentar"
+                         aria-expanded={activeCommentPost === post.id}
                          className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 text-white/60 hover:bg-white/10 transition-colors"
                        >
                          <MessageSquare size={18} />
-                         <span className="text-xs">{postComments[post.id]?.length || 0}</span>
+                         <span className="text-xs">{comments.length}</span>
                        </button>
 
                        <button className="flex items-center gap-2 px-3 py-2 rounded-lg bg-white/5 text-white/60 hover:bg-white/10 transition-colors ml-auto">
@@ -346,7 +371,7 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
                      <p className="text-white/90 font-light leading-relaxed mb-3">
                        {post.author.id && onViewProfile ? (
                          <button
-                           onClick={() => onViewProfile(post.author.id)}
+                           onClick={() => onViewProfile(post.author.id!)}
                            className="font-medium text-white hover:underline"
                          >
                            {post.author.name}
@@ -358,44 +383,17 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
                      </p>
                      )}
 
-                     {/* Comments Section */}
-                     {postComments[post.id]?.length > 0 && (
-                       <div className="mb-3 space-y-2">
-                         {postComments[post.id].map((comment: any) => (
-                           <div key={comment.id} className="flex gap-2 text-sm">
-                             <div className="w-6 h-6 rounded-full bg-white/10 flex items-center justify-center text-xs text-white/70 font-bold border border-white/10 shrink-0">
-                               {comment.user.charAt(0)}
-                             </div>
-                             <div className="flex-1">
-                               <span className="font-medium text-white/90 text-xs">{comment.user}</span>{' '}
-                               <span className="text-white/70 text-xs">{comment.text}</span>
-                             </div>
-                           </div>
-                         ))}
-                       </div>
-                     )}
-
-                     {/* Comment Input */}
-                     {activeCommentPost === post.id && (
-                       <div className="bg-white/5 rounded-lg p-2 border border-white/10 flex gap-2">
-                          <input 
-                            value={commentText}
-                            onChange={(e) => setCommentText(e.target.value)}
-                            className="flex-1 bg-transparent text-sm text-white placeholder-white/30 focus:outline-none px-2"
-                            placeholder="Adicione um comentário..."
-                            onKeyDown={(e) => e.key === 'Enter' && handleAddComment(post.id)}
-                          />
-                          <button 
-                            onClick={() => handleAddComment(post.id)} 
-                            className="text-blue-400 hover:text-blue-300 transition-colors"
-                          >
-                            <Send size={16} />
-                          </button>
-                       </div>
-                     )}
+                     {/* Comentários */}
+                     <PostComments
+                       comments={comments}
+                       showInput={activeCommentPost === post.id}
+                       canComment={canInteract && !!onAddComment}
+                       onSubmit={(text) => onAddComment!(memorial.id, post.postKey, text)}
+                     />
                    </div>
                  </div>
-               ))}
+                 );
+               })}
             </motion.div>
           )}
 
@@ -485,7 +483,7 @@ export function MemorialDetail({ memorial, tributes, onBack, onViewLivingMemory,
                   </div>
                   <div className="flex-1">
                     <p className="text-xs text-white/50 mb-0.5">Velas Acesas</p>
-                    <p className="text-white/90 text-sm">{memorial.candles || 0} velas</p>
+                    <p className="text-white/90 text-sm">{candles.count} {candles.count === 1 ? 'vela' : 'velas'}</p>
                   </div>
                 </div>
               </div>

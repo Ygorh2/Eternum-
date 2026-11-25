@@ -3,6 +3,10 @@ import { getYear } from '../utils/dateUtils';
 import { motion } from 'motion/react';
 import { Plus, Search, Menu, User, Heart, MessageCircle, Send, MoreVertical, Star } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
+import type { PostInteractions, ReactionType } from '../data/api';
+import { getReactions } from '../utils/postInteractions';
+import { galleryPostKey, memorialPostKey, tributePostKey } from '../utils/postKeys';
+import { PostComments } from './PostComments';
 
 interface Props {
   memorials: any[];
@@ -12,10 +16,18 @@ interface Props {
   onProfile: () => void;
   onOpenMenu: () => void;
   creatorNames?: Record<string, string>;
+  interactions?: PostInteractions;
+  canInteract?: boolean;
+  interactionError?: string | null;
+  onToggleReaction?: (memorialId: string, postKey: string, reaction: ReactionType) => void;
+  onAddComment?: (memorialId: string, postKey: string, text: string) => Promise<void>;
+  onDismissError?: () => void;
 }
 
 interface Post {
   id: string;
+  /** Chave usada para salvar reações/comentários (igual à da página do memorial). */
+  postKey: string;
   sourceType: 'memorial_created' | 'gallery_image' | 'tribute';
   memorial: {
     id: string;
@@ -34,10 +46,6 @@ interface Post {
     relationship?: string;
   };
   createdAt: string;
-  reactions: { amen: number; love: number };
-  comments: number;
-  hasReactedAmen: boolean;
-  hasReactedLove: boolean;
 }
 
 function formatRelativeDate(isoDate: string): string {
@@ -54,12 +62,28 @@ function formatRelativeDate(isoDate: string): string {
   return new Date(isoDate).toLocaleDateString('pt-BR', { day: '2-digit', month: 'short' });
 }
 
-export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfile, onOpenMenu, creatorNames }: Props) {
+const NO_INTERACTIONS: PostInteractions = { reactions: {}, comments: {} };
+
+export function Feed({
+  memorials,
+  tributes,
+  onSelectMemorial,
+  onCreate,
+  onProfile,
+  onOpenMenu,
+  creatorNames,
+  interactions = NO_INTERACTIONS,
+  canInteract = false,
+  interactionError,
+  onToggleReaction,
+  onAddComment,
+  onDismissError,
+}: Props) {
   const { user, userMetadata } = useAuth();
   const [activeTab, setActiveTab] = useState<'all' | 'people' | 'pets'>('all');
   const [searchMode, setSearchMode] = useState<'memorials' | 'users'>('memorials');
   const [searchTerm, setSearchTerm] = useState('');
-  const [reactionOverrides, setReactionOverrides] = useState<Record<string, { amen: number; love: number; hasAmen: boolean; hasLove: boolean }>>({});
+  const [openCommentsPost, setOpenCommentsPost] = useState<string | null>(null);
 
   // Gerar posts reais a partir de memoriais e homenagens
   const allPosts = useMemo<Post[]>(() => {
@@ -73,6 +97,7 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
     for (const memorial of memorials) {
       posts.push({
         id: `memorial-created-${memorial.id}`,
+        postKey: memorialPostKey(memorial.id),
         sourceType: 'memorial_created',
         memorial: {
           id: memorial.id,
@@ -88,10 +113,6 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
           name: creatorName(memorial),
         },
         createdAt: memorial.createdAt || new Date().toISOString(),
-        reactions: { amen: 0, love: 0 },
-        comments: 0,
-        hasReactedAmen: false,
-        hasReactedLove: false,
       });
 
       // 2. Cada imagem/vídeo da galeria do memorial gera um post separado
@@ -101,6 +122,7 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
           const isVideo = item.type === 'video';
           posts.push({
             id: `gallery-${memorial.id}-${i}`,
+            postKey: galleryPostKey(item.url),
             sourceType: 'gallery_image',
             memorial: {
               id: memorial.id,
@@ -115,10 +137,6 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
               name: creatorName(memorial),
             },
             createdAt: memorial.createdAt || new Date().toISOString(),
-            reactions: { amen: 0, love: 0 },
-            comments: 0,
-            hasReactedAmen: false,
-            hasReactedLove: false,
           });
         }
       }
@@ -130,6 +148,7 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
       if (!memorial) continue;
       posts.push({
         id: `tribute-${tribute.id}`,
+        postKey: tributePostKey(tribute.id),
         sourceType: 'tribute',
         memorial: {
           id: memorial.id,
@@ -146,10 +165,6 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
           relationship: tribute.type,
         },
         createdAt: tribute.createdAt || tribute.date || new Date().toISOString(),
-        reactions: { amen: 0, love: 0 },
-        comments: 0,
-        hasReactedAmen: false,
-        hasReactedLove: false,
       });
     }
 
@@ -157,20 +172,8 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
     return posts.sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
   }, [memorials, tributes, user, userMetadata, creatorNames]);
 
-  const handleReaction = (postId: string, type: 'amen' | 'love') => {
-    setReactionOverrides(prev => {
-      const base = prev[postId] || { amen: 0, love: 0, hasAmen: false, hasLove: false };
-      const toggling = type === 'amen' ? 'hasAmen' : 'hasLove';
-      const wasOn = base[toggling];
-      return {
-        ...prev,
-        [postId]: {
-          ...base,
-          [type]: wasOn ? base[type] - 1 : base[type] + 1,
-          [toggling]: !wasOn,
-        },
-      };
-    });
+  const handleReaction = (post: Post, type: ReactionType) => {
+    onToggleReaction?.(post.memorial.id, post.postKey, type);
   };
 
   // Filtrar posts por tipo de memorial
@@ -267,6 +270,17 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
         )}
       </div>
 
+      {interactionError && (
+        <div role="alert" className="mx-4 mt-3 px-3 py-2 rounded-lg bg-amber-500/10 border border-amber-400/30 text-amber-100 text-xs flex items-center justify-between gap-2">
+          <span>{interactionError}</span>
+          {onDismissError && (
+            <button onClick={onDismissError} className="text-amber-200/80 hover:text-amber-100" aria-label="Fechar aviso">
+              ✕
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Content Area */}
       <div className="flex-1 overflow-y-auto">
         {searchMode === 'users' ? (
@@ -343,11 +357,13 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
             )}
 
             {filteredPosts.map((post, index) => {
-              const overrides = reactionOverrides[post.id];
-              const amenCount = (overrides?.amen ?? post.reactions.amen);
-              const loveCount = (overrides?.love ?? post.reactions.love);
-              const hasAmen = overrides?.hasAmen ?? post.hasReactedAmen;
-              const hasLove = overrides?.hasLove ?? post.hasReactedLove;
+              const reactions = getReactions(interactions, post.postKey);
+              const amenCount = reactions.amen;
+              const loveCount = reactions.love;
+              const hasAmen = reactions.mine.amen;
+              const hasLove = reactions.mine.love;
+              const comments = interactions.comments[post.postKey] || [];
+              const commentsOpen = openCommentsPost === post.id;
 
               return (
                 <motion.div
@@ -406,7 +422,9 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
                   <div className="p-3 space-y-3">
                     <div className="flex items-center gap-4">
                       <button
-                        onClick={() => handleReaction(post.id, 'amen')}
+                        onClick={() => handleReaction(post, 'amen')}
+                        aria-label="Amém"
+                        aria-pressed={hasAmen}
                         className={`flex items-center gap-1.5 transition-all ${hasAmen ? 'text-blue-300' : 'text-white/60 hover:text-white'}`}
                       >
                         <div className={`flex items-center justify-center w-7 h-7 rounded-full text-base ${hasAmen ? 'bg-blue-500/20' : ''}`}>
@@ -415,14 +433,22 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
                       </button>
 
                       <button
-                        onClick={() => handleReaction(post.id, 'love')}
+                        onClick={() => handleReaction(post, 'love')}
+                        aria-label="Amor"
+                        aria-pressed={hasLove}
                         className={`transition-all ${hasLove ? 'text-pink-300' : 'text-white/60 hover:text-white'}`}
                       >
                         <Heart size={22} className={hasLove ? 'fill-pink-300' : ''} />
                       </button>
 
-                      <button className="text-white/60 hover:text-white transition-colors">
+                      <button
+                        onClick={() => setOpenCommentsPost(commentsOpen ? null : post.id)}
+                        aria-label="Comentar"
+                        aria-expanded={commentsOpen}
+                        className={`flex items-center gap-1 transition-colors ${commentsOpen ? 'text-blue-300' : 'text-white/60 hover:text-white'}`}
+                      >
                         <MessageCircle size={22} />
+                        {comments.length > 0 && <span className="text-xs">{comments.length}</span>}
                       </button>
 
                       <button className="text-white/60 hover:text-white transition-colors ml-auto">
@@ -457,6 +483,24 @@ export function Feed({ memorials, tributes, onSelectMemorial, onCreate, onProfil
                           {post.content.message}
                         </p>
                       </div>
+                    )}
+
+                    {/* Comentários */}
+                    {!commentsOpen && comments.length > 0 && (
+                      <button
+                        onClick={() => setOpenCommentsPost(post.id)}
+                        className="text-xs text-white/50 hover:text-white/70 transition-colors"
+                      >
+                        {comments.length === 1 ? 'Ver 1 comentário' : `Ver os ${comments.length} comentários`}
+                      </button>
+                    )}
+                    {commentsOpen && (
+                      <PostComments
+                        comments={comments}
+                        showInput
+                        canComment={canInteract && !!onAddComment}
+                        onSubmit={(text) => onAddComment!(post.memorial.id, post.postKey, text)}
+                      />
                     )}
                   </div>
                 </motion.div>
