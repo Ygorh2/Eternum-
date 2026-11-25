@@ -1,4 +1,4 @@
-import React, { useMemo, useState, useEffect } from 'react';
+import React, { useMemo, useState, useEffect, useRef } from 'react';
 import { useNavigate, useParams, Navigate, useSearchParams } from 'react-router';
 import { useApp } from './Layout';
 import * as api from './data/api';
@@ -18,6 +18,172 @@ import { Onboarding } from './components/Onboarding';
 import { PublicProfile } from './components/PublicProfile';
 import { AcceptInvite } from './components/AcceptInvite';
 import { People } from './components/People';
+import { getReactions, withComment, withReaction } from './utils/postInteractions';
+import { tributeIdFromPostKey } from './utils/postKeys';
+
+// ------------------------------------------------------------------
+// Hooks de interação (velas, seguir memorial, reações e comentários).
+// Ficam aqui para que as telas continuem só de apresentação.
+// ------------------------------------------------------------------
+
+const EMPTY_INTERACTIONS: api.PostInteractions = { reactions: {}, comments: {} };
+
+/** Reações e comentários dos posts desses memoriais, com atualização otimista. */
+function usePostInteractions(memorialIds: string[], user: any) {
+  const isGuest = !user || user.isGuest;
+  const userId = isGuest ? undefined : user.id;
+  const idsKey = useMemo(() => Array.from(new Set(memorialIds)).sort().join(','), [memorialIds]);
+  const [interactions, setInteractions] = useState<api.PostInteractions>(EMPTY_INTERACTIONS);
+  const [error, setError] = useState<string | null>(null);
+  const pending = useRef(new Set<string>());
+
+  useEffect(() => {
+    if (!idsKey) {
+      setInteractions(EMPTY_INTERACTIONS);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchPostInteractions(idsKey.split(','), userId)
+      .then((data) => {
+        if (!cancelled) setInteractions(data);
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar reações e comentários:', err);
+        if (!cancelled) setError('Não foi possível carregar reações e comentários.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [idsKey, userId]);
+
+  const toggleReaction = async (memorialId: string, postKey: string, reaction: api.ReactionType) => {
+    if (!userId) {
+      setError('Entre com sua conta para reagir.');
+      return;
+    }
+    const lockKey = `${postKey}|${reaction}`;
+    if (pending.current.has(lockKey)) return;
+    pending.current.add(lockKey);
+    const on = !getReactions(interactions, postKey).mine[reaction];
+    setError(null);
+    setInteractions((prev) => withReaction(prev, postKey, reaction, on));
+    try {
+      if (on) await api.addReaction(memorialId, postKey, reaction, tributeIdFromPostKey(postKey));
+      else await api.removeReaction(postKey, reaction);
+    } catch (err: any) {
+      console.error('Erro ao salvar reação:', err);
+      setInteractions((prev) => withReaction(prev, postKey, reaction, !on));
+      setError('Não foi possível salvar sua reação. Tente de novo.');
+    } finally {
+      pending.current.delete(lockKey);
+    }
+  };
+
+  const addComment = async (memorialId: string, postKey: string, text: string) => {
+    if (!userId) throw new Error('Entre com sua conta para comentar.');
+    const saved = await api.addComment(memorialId, postKey, text, user.name, tributeIdFromPostKey(postKey));
+    setInteractions((prev) => withComment(prev, saved));
+  };
+
+  return {
+    interactions,
+    canInteract: !!userId,
+    interactionError: error,
+    onToggleReaction: toggleReaction,
+    onAddComment: addComment,
+    onDismissError: () => setError(null),
+  };
+}
+
+/** Velas do memorial: total e se o usuário já acendeu a dele (1 por pessoa). */
+function useCandle(memorialId: string | undefined, user: any) {
+  const userId = !user || user.isGuest ? undefined : user.id;
+  const [info, setInfo] = useState({ count: 0, litByMe: false });
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!memorialId) return;
+    let cancelled = false;
+    api
+      .fetchCandleInfo(memorialId, userId)
+      .then((data) => {
+        if (!cancelled) setInfo(data);
+      })
+      .catch((err) => console.error('Erro ao carregar velas:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [memorialId, userId]);
+
+  const light = async () => {
+    if (!memorialId) return;
+    if (!userId) {
+      setError('Entre com sua conta para acender uma vela.');
+      return;
+    }
+    if (info.litByMe) return;
+    setError(null);
+    setInfo((prev) => ({ count: prev.count + 1, litByMe: true }));
+    try {
+      await api.lightCandle(memorialId);
+    } catch (err: any) {
+      console.error('Erro ao acender vela:', err);
+      setInfo((prev) => ({ count: Math.max(0, prev.count - 1), litByMe: false }));
+      setError('Não foi possível acender a vela. Tente de novo.');
+    }
+  };
+
+  return { candles: info, candleError: error, onLightCandle: light };
+}
+
+/** Botão "Seguir" do memorial e contador de seguidores. */
+function useMemorialFollow(memorialId: string | undefined, user: any) {
+  const userId = !user || user.isGuest ? undefined : user.id;
+  const [info, setInfo] = useState({ count: 0, isFollowing: false });
+  const [error, setError] = useState<string | null>(null);
+  const busy = useRef(false);
+
+  useEffect(() => {
+    if (!memorialId) return;
+    let cancelled = false;
+    api
+      .fetchMemorialFollowInfo(memorialId, userId)
+      .then((data) => {
+        if (!cancelled) setInfo(data);
+      })
+      .catch((err) => console.error('Erro ao carregar seguidores do memorial:', err));
+    return () => {
+      cancelled = true;
+    };
+  }, [memorialId, userId]);
+
+  const toggle = async () => {
+    if (!memorialId || busy.current) return;
+    if (!userId) {
+      setError('Entre com sua conta para seguir este memorial.');
+      return;
+    }
+    busy.current = true;
+    const follow = !info.isFollowing;
+    const apply = (on: boolean) =>
+      setInfo((prev) => ({ count: Math.max(0, prev.count + (on ? 1 : -1)), isFollowing: on }));
+    setError(null);
+    apply(follow);
+    try {
+      if (follow) await api.followMemorial(memorialId);
+      else await api.unfollowMemorial(memorialId);
+    } catch (err: any) {
+      console.error('Erro ao seguir memorial:', err);
+      apply(!follow);
+      setError('Não foi possível atualizar. Tente de novo.');
+    } finally {
+      busy.current = false;
+    }
+  };
+
+  return { follow: info, followError: error, onToggleFollow: toggle };
+}
 
 // Public Routes
 
@@ -102,11 +268,15 @@ export function ConnectedFeed() {
     };
   }, [creatorIdsKey]);
 
+  const feedMemorialIds = useMemo(() => feedMemorials.map((m: any) => m.id), [feedMemorials]);
+  const postInteractions = usePostInteractions(feedMemorialIds, user);
+
   return (
     <Feed
       memorials={feedMemorials}
       creatorNames={creatorNames}
       tributes={tributes}
+      {...postInteractions}
       onSelectMemorial={(id) => navigate(`/memorial/${id}`)}
       onCreate={(type) => navigate(`/create-memorial?type=${type || 'person'}`)}
       onProfile={() => navigate('/profile')}
@@ -225,7 +395,7 @@ function MemorialUnavailable({ loading }: { loading: boolean }) {
 
 export function ConnectedMemorialDetail() {
   const { id } = useParams();
-  const { memorials, tributes, memorialsLoading } = useApp();
+  const { memorials, tributes, user, memorialsLoading } = useApp();
   const navigate = useNavigate();
   
   const memorial = useMemo(() => 
@@ -236,12 +406,20 @@ export function ConnectedMemorialDetail() {
     tributes.filter(t => t.memorialId === memorial?.id),
   [tributes, memorial]);
 
+  const memorialIds = useMemo(() => (memorial ? [memorial.id] : []), [memorial?.id]);
+  const postInteractions = usePostInteractions(memorialIds, user);
+  const candle = useCandle(memorial?.id, user);
+  const follow = useMemorialFollow(memorial?.id, user);
+
   if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
   return (
     <MemorialDetail 
       memorial={memorial}
       tributes={memorialTributes}
+      {...postInteractions}
+      {...candle}
+      {...follow}
       onBack={() => navigate('/feed')}
       onViewLivingMemory={() => navigate(`/living-memory/${memorial.id}`)}
       onWriteTribute={() => navigate(`/write-tribute/${memorial.id}`)}
@@ -259,6 +437,7 @@ export function ConnectedLivingMemory() {
   const memorialTributes = useMemo(() => tributes.filter(t => t.memorialId === id), [tributes, id]);
 
   const isAdmin = memorial?.createdBy === user?.id;
+  const candle = useCandle(memorial?.id, user);
 
   if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
@@ -266,6 +445,7 @@ export function ConnectedLivingMemory() {
     <LivingMemory 
       memorial={memorial}
       tributes={memorialTributes}
+      {...candle}
       onBack={() => navigate(`/memorial/${id}`)} 
       isAdmin={isAdmin}
     />

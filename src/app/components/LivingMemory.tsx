@@ -38,10 +38,22 @@ interface Props {
   tributes: Tribute[];
   onBack: () => void;
   isAdmin?: boolean; // Is current user the memorial administrator
+  // Velas salvas no Supabase (1 por pessoa por memorial)
+  candles?: { count: number; litByMe: boolean };
+  candleError?: string | null;
+  onLightCandle?: () => void;
 }
 
-export function LivingMemory({ memorial, tributes, onBack, isAdmin = false }: Props) {
-  const [candlesLit, setCandlesLit] = useState(0);
+export function LivingMemory({
+  memorial,
+  tributes,
+  onBack,
+  isAdmin = false,
+  candles = { count: 0, litByMe: false },
+  candleError,
+  onLightCandle,
+}: Props) {
+  const candlesLit = candles.count;
   const [showCandleAnimation, setShowCandleAnimation] = useState(false);
   const [showAddMessageModal, setShowAddMessageModal] = useState(false);
   const [newMessage, setNewMessage] = useState('');
@@ -151,7 +163,8 @@ export function LivingMemory({ memorial, tributes, onBack, isAdmin = false }: Pr
   const Icon = isPet ? Bone : Flame;
 
   const handleLight = () => {
-    setCandlesLit(prev => prev + 1);
+    if (candles.litByMe) return;
+    onLightCandle?.();
     setShowCandleAnimation(true);
     setTimeout(() => setShowCandleAnimation(false), 2000);
   };
@@ -312,10 +325,13 @@ export function LivingMemory({ memorial, tributes, onBack, isAdmin = false }: Pr
                         {event.type === 'today' && (
                            <button 
                              onClick={handleLight}
-                             className={`flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium transition-all active:scale-95 shadow-lg ${isPet ? 'bg-gradient-to-r from-blue-500/30 to-blue-600/30 text-blue-100 hover:from-blue-500/40 hover:to-blue-600/40 border border-blue-400/30' : 'bg-gradient-to-r from-amber-500/30 to-orange-500/30 text-amber-100 hover:from-amber-500/40 hover:to-orange-500/40 border border-amber-400/30'}`}
+                             disabled={candles.litByMe}
+                             className={`disabled:opacity-70 disabled:cursor-default flex items-center gap-2 px-4 py-2 rounded-full text-xs font-medium transition-all active:scale-95 shadow-lg ${isPet ? 'bg-gradient-to-r from-blue-500/30 to-blue-600/30 text-blue-100 hover:from-blue-500/40 hover:to-blue-600/40 border border-blue-400/30' : 'bg-gradient-to-r from-amber-500/30 to-orange-500/30 text-amber-100 hover:from-amber-500/40 hover:to-orange-500/40 border border-amber-400/30'}`}
                            >
                              <Icon size={14} className={showCandleAnimation ? 'animate-bounce' : ''} />
-                             {isPet ? 'Deixar Carinho' : 'Acender Vela'}
+                             {candles.litByMe
+                               ? isPet ? 'Carinho deixado' : 'Vela acesa'
+                               : isPet ? 'Deixar Carinho' : 'Acender Vela'}
                            </button>
                         )}
                      </div>
@@ -327,8 +343,16 @@ export function LivingMemory({ memorial, tributes, onBack, isAdmin = false }: Pr
                           {candlesLit > 0 && (
                              <div className="mt-4 flex items-center gap-2 px-3 py-2 bg-white/10 rounded-lg border border-white/20">
                                <Flame size={16} className="text-amber-300 animate-pulse" />
-                               <p className="text-sm text-white/70">{candlesLit} {isPet ? 'carinhos deixados' : 'velas acesas'} neste momento</p>
+                               <p className="text-sm text-white/70">
+                                 {candlesLit}{' '}
+                                 {isPet
+                                   ? candlesLit === 1 ? 'carinho deixado' : 'carinhos deixados'
+                                   : candlesLit === 1 ? 'vela acesa' : 'velas acesas'}
+                               </p>
                              </div>
+                          )}
+                          {candleError && (
+                            <p role="alert" className="mt-3 text-xs text-amber-200">{candleError}</p>
                           )}
                        </div>
                      ) : event.type === 'automated-message' ? (

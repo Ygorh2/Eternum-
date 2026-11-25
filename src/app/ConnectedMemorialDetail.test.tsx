@@ -3,7 +3,11 @@ import { render, screen } from '@testing-library/react'
 import { MemoryRouter, Route, Routes } from 'react-router'
 
 // Testes não podem chamar o Supabase real
-vi.mock('./data/api', () => ({}))
+vi.mock('./data/api', () => ({
+  fetchPostInteractions: vi.fn().mockResolvedValue({ reactions: {}, comments: {} }),
+  fetchCandleInfo: vi.fn().mockResolvedValue({ count: 0, litByMe: false }),
+  fetchMemorialFollowInfo: vi.fn().mockResolvedValue({ count: 0, isFollowing: false }),
+}))
 
 let appContext: any
 vi.mock('./Layout', () => ({ useApp: () => appContext }))

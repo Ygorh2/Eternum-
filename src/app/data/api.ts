@@ -196,6 +196,211 @@ export async function countCandles(memorialId: string) {
   return count || 0;
 }
 
+/** Total de velas do memorial e se o usuário atual já acendeu a dele. */
+export async function fetchCandleInfo(memorialId: string, userId?: string) {
+  const count = await countCandles(memorialId);
+  if (!userId) return { count, litByMe: false };
+  const { data, error } = await supabase
+    .from('candles')
+    .select('memorial_id')
+    .eq('memorial_id', memorialId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error) throw error;
+  return { count, litByMe: !!data };
+}
+
+// ------------------------------------------------------------------
+// Seguir memorial (tabela memorial_follows — migration 0006)
+// ------------------------------------------------------------------
+
+export async function fetchMemorialFollowInfo(memorialId: string, userId?: string) {
+  const { count, error } = await supabase
+    .from('memorial_follows')
+    .select('*', { count: 'exact', head: true })
+    .eq('memorial_id', memorialId);
+  if (error) throw error;
+  if (!userId) return { count: count || 0, isFollowing: false };
+  const { data, error: mineErr } = await supabase
+    .from('memorial_follows')
+    .select('memorial_id')
+    .eq('memorial_id', memorialId)
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (mineErr) throw mineErr;
+  return { count: count || 0, isFollowing: !!data };
+}
+
+export async function followMemorial(memorialId: string) {
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from('memorial_follows')
+    .insert({ memorial_id: memorialId, user_id: userId });
+  if (error && error.code !== '23505') throw error; // ignora "já segue"
+}
+
+export async function unfollowMemorial(memorialId: string) {
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from('memorial_follows')
+    .delete()
+    .eq('memorial_id', memorialId)
+    .eq('user_id', userId);
+  if (error) throw error;
+}
+
+// ------------------------------------------------------------------
+// Reações e comentários dos posts (migration 0006)
+// ------------------------------------------------------------------
+
+export type ReactionType = 'amen' | 'love';
+
+export type PostComment = {
+  id: string;
+  postKey: string;
+  memorialId: string;
+  userId: string;
+  authorName: string;
+  content: string;
+  createdAt: string;
+};
+
+export type PostReactionSummary = {
+  amen: number;
+  love: number;
+  mine: { amen: boolean; love: boolean };
+};
+
+export type PostInteractions = {
+  reactions: Record<string, PostReactionSummary>;
+  comments: Record<string, PostComment[]>;
+};
+
+/** Mantém a URL do PostgREST curta quando há muitos memoriais. */
+function chunk<T>(items: T[], size: number): T[][] {
+  const out: T[][] = [];
+  for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
+  return out;
+}
+
+/** Reações (com as do usuário atual marcadas) e comentários dos posts desses memoriais. */
+export async function fetchPostInteractions(
+  memorialIds: string[],
+  currentUserId?: string
+): Promise<PostInteractions> {
+  const result: PostInteractions = { reactions: {}, comments: {} };
+  if (memorialIds.length === 0) return result;
+
+  const reactionRows: any[] = [];
+  const commentRows: any[] = [];
+  for (const ids of chunk(memorialIds, 100)) {
+    const [reactions, comments] = await Promise.all([
+      supabase.from('post_reactions').select('post_key, reaction, user_id').in('memorial_id', ids),
+      supabase
+        .from('post_comments')
+        .select('id, post_key, memorial_id, user_id, content, created_at')
+        .in('memorial_id', ids)
+        .order('created_at', { ascending: true }),
+    ]);
+    if (reactions.error) throw reactions.error;
+    if (comments.error) throw comments.error;
+    reactionRows.push(...(reactions.data || []));
+    commentRows.push(...(comments.data || []));
+  }
+
+  for (const row of reactionRows) {
+    const summary = (result.reactions[row.post_key] ??= {
+      amen: 0,
+      love: 0,
+      mine: { amen: false, love: false },
+    });
+    const type = row.reaction as ReactionType;
+    if (type !== 'amen' && type !== 'love') continue;
+    summary[type] += 1;
+    if (currentUserId && row.user_id === currentUserId) summary.mine[type] = true;
+  }
+
+  const authorIds = Array.from(new Set(commentRows.map((r) => r.user_id)));
+  const names = await fetchProfilesByIds(authorIds);
+  for (const row of commentRows) {
+    (result.comments[row.post_key] ??= []).push(
+      mapCommentFromDb(row, names[row.user_id] || 'Usuário')
+    );
+  }
+
+  return result;
+}
+
+function mapCommentFromDb(row: any, authorName: string): PostComment {
+  return {
+    id: row.id,
+    postKey: row.post_key,
+    memorialId: row.memorial_id,
+    userId: row.user_id,
+    authorName,
+    content: row.content,
+    createdAt: row.created_at,
+  };
+}
+
+export async function addReaction(
+  memorialId: string,
+  postKey: string,
+  reaction: ReactionType,
+  tributeId?: string | null
+) {
+  const userId = await requireUserId();
+  const { error } = await supabase.from('post_reactions').insert({
+    memorial_id: memorialId,
+    tribute_id: tributeId || null,
+    post_key: postKey,
+    user_id: userId,
+    reaction,
+  });
+  if (error && error.code !== '23505') throw error; // já reagiu
+}
+
+export async function removeReaction(postKey: string, reaction: ReactionType) {
+  const userId = await requireUserId();
+  const { error } = await supabase
+    .from('post_reactions')
+    .delete()
+    .eq('post_key', postKey)
+    .eq('user_id', userId)
+    .eq('reaction', reaction);
+  if (error) throw error;
+}
+
+export const MAX_COMMENT_LENGTH = 1000;
+
+export async function addComment(
+  memorialId: string,
+  postKey: string,
+  content: string,
+  authorName: string,
+  tributeId?: string | null
+): Promise<PostComment> {
+  const userId = await requireUserId();
+  const text = content.trim();
+  if (!text) throw new Error('Escreva um comentário.');
+  if (text.length > MAX_COMMENT_LENGTH) {
+    throw new Error(`O comentário pode ter no máximo ${MAX_COMMENT_LENGTH} caracteres.`);
+  }
+  const { data, error } = await supabase
+    .from('post_comments')
+    .insert({
+      memorial_id: memorialId,
+      tribute_id: tributeId || null,
+      post_key: postKey,
+      user_id: userId,
+      content: text,
+    })
+    .select('id, post_key, memorial_id, user_id, content, created_at')
+    .single();
+  if (error) throw error;
+  return mapCommentFromDb(data, authorName);
+}
+
 // ------------------------------------------------------------------
 // Invites (convites para a família)
 // ------------------------------------------------------------------
