@@ -242,6 +242,67 @@ function useMemorialFollow(memorialId: string | undefined, user: any) {
 }
 
 /** Publicações com foto/vídeo e legenda desses memoriais (tabela memorial_posts). */
+/**
+ * Publicações feitas por uma pessoa (grade do perfil), em páginas.
+ * Tocar num quadrado abre o memorial já rolado até a publicação.
+ */
+function useUserPosts(userId: string | undefined) {
+  const navigate = useNavigate();
+  const [posts, setPosts] = useState<api.MemorialPost[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [hasMore, setHasMore] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const requestRef = useRef(0);
+
+  const load = async (before?: string) => {
+    if (!userId) return;
+    const request = ++requestRef.current;
+    setLoading(true);
+    setError(null);
+    try {
+      const page = await api.fetchUserPostsPage(userId, before);
+      if (request !== requestRef.current) return;
+      setPosts((prev) => {
+        const base = before ? prev : [];
+        const seen = new Set(base.map((p) => p.id));
+        return [...base, ...page.filter((p) => !seen.has(p.id))];
+      });
+      setHasMore(page.length >= api.PROFILE_POSTS_PAGE_SIZE);
+    } catch (err) {
+      console.error('Erro ao carregar publicações do perfil:', err);
+      if (request === requestRef.current) setError('Não foi possível carregar as publicações.');
+    } finally {
+      if (request === requestRef.current) setLoading(false);
+    }
+  };
+
+  useEffect(() => {
+    setPosts([]);
+    setHasMore(false);
+    load();
+    return () => {
+      // ignora respostas que chegarem depois de trocar de perfil
+      requestRef.current++;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [userId]);
+
+  return {
+    posts,
+    postsLoading: loading,
+    postsHasMore: hasMore,
+    postsError: error,
+    onLoadMorePosts: () => {
+      const last = posts[posts.length - 1];
+      if (last && !loading) load(last.createdAt);
+    },
+    onOpenPost: (postId: string) => {
+      const post = posts.find((p) => p.id === postId);
+      if (post) navigate(`/memorial/${post.memorialId}?post=${encodeURIComponent(post.id)}`);
+    },
+  };
+}
+
 function useMemorialPosts(memorialIds: string[]) {
   const idsKey = useMemo(() => Array.from(new Set(memorialIds)).sort().join(','), [memorialIds]);
   const [posts, setPosts] = useState<api.MemorialPost[]>([]);
@@ -850,15 +911,17 @@ export function ConnectedNotifications() {
 }
 
 export function ConnectedProfile() {
-  const { handleLogout, memorials } = useApp();
+  const { handleLogout, memorials, user } = useApp();
   const { setIsMenuOpen } = useApp();
   const navigate = useNavigate();
+  const userPosts = useUserPosts(user && !user.isGuest ? user.id : undefined);
   return (
     <Profile 
       onLogout={handleLogout} 
       onOpenMenu={() => setIsMenuOpen(true)}
       onSettings={() => navigate('/settings')}
       memorials={memorials}
+      {...userPosts}
     />
   );
 }
@@ -896,6 +959,8 @@ function MemorialUnavailable({ loading }: { loading: boolean }) {
 
 export function ConnectedMemorialDetail() {
   const { id } = useParams();
+  const [searchParams] = useSearchParams();
+  const focusPostId = searchParams.get('post') || undefined;
   const { memorials, tributes, user, memorialsLoading } = useApp();
   const navigate = useNavigate();
   
@@ -925,6 +990,7 @@ export function ConnectedMemorialDetail() {
       tributes={memorialTributes}
       posts={posts}
       postsError={postsError}
+      focusPostId={focusPostId}
       currentUserId={canPost ? user.id : undefined}
       onCreatePost={canPost ? () => navigate(`/memorial/${memorial.id}/nova-publicacao`) : undefined}
       onDeletePost={onDeletePost}
@@ -1083,6 +1149,7 @@ export function ConnectedPublicProfile() {
   const { memorials, user, reloadData } = useApp();
   const navigate = useNavigate();
   const { onReport, reportDialog } = useReporting(user);
+  const userPosts = useUserPosts(id);
 
   if (!id) return <div>Usuário não encontrado</div>;
 
@@ -1092,6 +1159,7 @@ export function ConnectedPublicProfile() {
         userId={id}
         currentUserId={user?.id}
         memorials={memorials}
+        {...userPosts}
         onBack={() => navigate(-1)}
         onSelectMemorial={(memorialId) => navigate(`/memorial/${memorialId}`)}
         onReport={onReport}

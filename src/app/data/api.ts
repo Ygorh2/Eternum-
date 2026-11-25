@@ -1,6 +1,7 @@
 import { supabase } from '/utils/supabase/client';
 import type { FeedQuery, FollowingScope } from '../utils/feed';
 import { MAX_CAPTION_LENGTH, MAX_POST_MEDIA } from '../utils/mediaValidation';
+import { compressImage } from '../utils/imageCompression';
 import {
   MEDIA_BUCKET,
   SIGNED_URL_TTL_SECONDS,
@@ -88,8 +89,11 @@ export async function uploadMedia(file: File, subfolder: string): Promise<string
 }
 
 /** Igual a uploadMedia, mas devolve também o caminho no bucket (para poder apagar depois). */
-async function uploadMediaWithPath(file: File, subfolder: string): Promise<{ url: string; path: string }> {
+async function uploadMediaWithPath(original: File, subfolder: string): Promise<{ url: string; path: string }> {
   const userId = await requireUserId();
+  // Fotos são reduzidas (até 1600px) e comprimidas no aparelho antes de subir.
+  // Vídeos e GIFs seguem como estão; se a compressão falhar, vai o original.
+  const file = await compressImage(original);
   const random = Math.random().toString(36).slice(2, 8);
   const path = `${userId}/${subfolder}/${Date.now()}-${random}-${sanitizeFileName(file.name)}`;
 
@@ -681,6 +685,39 @@ export async function fetchFeedMemorialPostsPage(q: FeedQuery) {
       createdBy: row.memorial?.created_by,
     },
   })));
+}
+
+// ------------------------------------------------------------------
+// Grade de fotos do perfil: publicações feitas por uma pessoa
+// ------------------------------------------------------------------
+
+export const PROFILE_POSTS_PAGE_SIZE = 18;
+
+/**
+ * Publicações (memorial_posts) feitas por esta pessoa, da mais recente para a
+ * mais antiga, em páginas. A RLS (can_view_memorial) já esconde as publicações
+ * de memoriais privados que quem está vendo não pode acessar, e as fotos saem
+ * com links temporários (assinados), como no resto do app.
+ * `before` = created_at da última publicação já carregada.
+ */
+export async function fetchUserPostsPage(
+  userId: string,
+  before?: string,
+  limit = PROFILE_POSTS_PAGE_SIZE
+): Promise<MemorialPost[]> {
+  if (onlyUuids([userId]).length === 0) return [];
+  let req = supabase
+    .from('memorial_posts')
+    .select(POST_COLUMNS)
+    .eq('author_id', userId)
+    .order('created_at', { ascending: false })
+    .order('id', { ascending: false })
+    .limit(limit);
+  if (before) req = req.lt('created_at', before);
+  const { data, error } = await req;
+  if (isMissingTable(error)) return [];
+  if (error) throw error;
+  return withSignedItems((data || []).map((row: any) => mapPostFromDb(row, '')));
 }
 
 // ------------------------------------------------------------------

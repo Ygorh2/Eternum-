@@ -1,6 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { motion } from 'motion/react';
-import { ArrowLeft, User, Loader2, Star, UserPlus, UserMinus, MoreVertical, Flag, Ban } from 'lucide-react';
+import { ArrowLeft, User, Loader2, Star, UserPlus, UserMinus, MoreVertical, Flag, Ban, Grid3x3 } from 'lucide-react';
 import * as api from '../data/api';
 import type { ReportTarget } from '../utils/reports';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from './ui/dropdown-menu';
@@ -14,6 +14,7 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from './ui/alert-dialog';
+import { PostGrid, gridItemsFromPosts } from './PostGrid';
 
 interface Props {
   userId: string;
@@ -25,6 +26,13 @@ interface Props {
   onReport?: (target: ReportTarget) => void;
   /** Avisado depois de bloquear/desbloquear (para recarregar o que aparece no app). */
   onBlockedChange?: () => void;
+  // Grade de fotos: publicações feitas por esta pessoa
+  posts?: api.MemorialPost[];
+  postsLoading?: boolean;
+  postsHasMore?: boolean;
+  postsError?: string | null;
+  onLoadMorePosts?: () => void;
+  onOpenPost?: (postId: string) => void;
 }
 
 export function PublicProfile({
@@ -35,6 +43,12 @@ export function PublicProfile({
   onSelectMemorial,
   onReport,
   onBlockedChange,
+  posts = [],
+  postsLoading,
+  postsHasMore,
+  postsError,
+  onLoadMorePosts,
+  onOpenPost,
 }: Props) {
   const [profile, setProfile] = useState<{ displayName?: string; username?: string } | null>(null);
   const [stats, setStats] = useState({ tributesCount: 0, candlesCount: 0, followersCount: 0, followingCount: 0 });
@@ -252,6 +266,29 @@ export function PublicProfile({
               </div>
             </div>
           </div>
+
+          {onOpenPost && !isBlocked && (
+            <section className="w-full mb-8" aria-labelledby="public-profile-posts-title">
+              <h3
+                id="public-profile-posts-title"
+                className="flex items-center justify-center gap-2 text-xs font-medium text-white/60 uppercase tracking-widest pb-3 mb-0.5 border-b border-white/10"
+              >
+                <Grid3x3 size={14} aria-hidden="true" />
+                Publicações
+              </h3>
+              <div className="-mx-6">
+                <PostGrid
+                  items={gridItemsFromPosts(posts)}
+                  onSelect={onOpenPost}
+                  loading={postsLoading}
+                  hasMore={postsHasMore}
+                  onLoadMore={onLoadMorePosts}
+                  error={postsError}
+                  emptyText={isOwnProfile ? 'Você ainda não publicou fotos.' : 'Nenhuma publicação ainda.'}
+                />
+              </div>
+            </section>
+          )}
 
           {userMemorials.length > 0 && (
             <div className="w-full">
