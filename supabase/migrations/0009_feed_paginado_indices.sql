@@ -1,5 +1,6 @@
 -- Etapa: feed paginado (abas "Seguindo" e "Explorar")
--- Rode este arquivo inteiro no SQL Editor do Supabase, depois das anteriores.
+-- Rode este arquivo inteiro no SQL Editor do Supabase, depois das anteriores
+-- (inclusive a 0007_publicacoes_memorial.sql).
 -- É idempotente: pode rodar de novo sem quebrar nada.
 --
 -- Só cria ÍNDICES. Não muda tabelas, dados nem policies (a RLS continua igual:
@@ -28,3 +29,10 @@ create index if not exists idx_tributes_author_created_at
 -- Aba "Seguindo": homenagens nos memoriais que eu sigo (ou de quem eu sigo)
 create index if not exists idx_tributes_memorial_created_at
   on public.tributes (memorial_id, created_at desc);
+
+-- Publicações com foto/vídeo (tabela criada na 0007 — rode a 0007 antes desta).
+-- A 0007 já criou (memorial_id, created_at desc); faltam estes dois:
+create index if not exists idx_memorial_posts_created_at
+  on public.memorial_posts (created_at desc, id desc);
+create index if not exists idx_memorial_posts_author_created_at
+  on public.memorial_posts (author_id, created_at desc);

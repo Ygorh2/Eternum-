@@ -5,6 +5,7 @@ import * as api from './data/api';
 import { Feed } from './components/Feed';
 import { MemorialDetail } from './components/MemorialDetail';
 import { CreateMemorial } from './components/CreateMemorial';
+import { EditMemorial, type EditMemorialChanges } from './components/EditMemorial';
 import { LivingMemory } from './components/LivingMemory';
 import { Profile } from './components/Profile';
 import { WriteTribute } from './components/WriteTribute';
@@ -18,6 +19,7 @@ import { Onboarding } from './components/Onboarding';
 import { PublicProfile } from './components/PublicProfile';
 import { AcceptInvite } from './components/AcceptInvite';
 import { People } from './components/People';
+import { CreatePost } from './components/CreatePost';
 import { getReactions, withComment, withReaction } from './utils/postInteractions';
 import { tributeIdFromPostKey } from './utils/postKeys';
 import {
@@ -205,6 +207,54 @@ function useMemorialFollow(memorialId: string | undefined, user: any) {
   };
 
   return { follow: info, followError: error, onToggleFollow: toggle };
+}
+
+/** Publicações com foto/vídeo e legenda desses memoriais (tabela memorial_posts). */
+function useMemorialPosts(memorialIds: string[]) {
+  const idsKey = useMemo(() => Array.from(new Set(memorialIds)).sort().join(','), [memorialIds]);
+  const [posts, setPosts] = useState<api.MemorialPost[]>([]);
+  const [postsError, setPostsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!idsKey) {
+      setPosts([]);
+      return;
+    }
+    let cancelled = false;
+    api
+      .fetchMemorialPosts(idsKey.split(','))
+      .then((data) => {
+        if (!cancelled) {
+          setPosts(data);
+          setPostsError(null);
+        }
+      })
+      .catch((err) => {
+        console.error('Erro ao carregar publicações:', err);
+        if (!cancelled) setPostsError('Não foi possível carregar as publicações.');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [idsKey]);
+
+  const deletePost = async (postId: string) => {
+    const post = posts.find((p) => p.id === postId);
+    if (!post) return;
+    setPostsError(null);
+    setPosts((prev) => prev.filter((p) => p.id !== postId));
+    try {
+      await api.deleteMemorialPost(post);
+    } catch (err: any) {
+      console.error('Erro ao apagar publicação:', err);
+      setPosts((prev) =>
+        [...prev, post].sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1))
+      );
+      setPostsError('Não foi possível apagar a publicação. Tente de novo.');
+    }
+  };
+
+  return { posts, postsError, onDeletePost: deletePost };
 }
 
 // Public Routes
@@ -424,7 +474,7 @@ export function ConnectedMyMemorials() {
     <MyMemorials 
       memorials={myMemorials} 
       onBack={() => navigate('/feed')}
-      onEdit={(id) => navigate(`/memorial/${id}`)} 
+      onEdit={(id) => navigate(`/memorial/${id}/edit`)}
       onDelete={handleDeleteMemorial}
       onLocate={(id) => {
         setSkyTargetId(id);
@@ -514,6 +564,8 @@ export function ConnectedMemorialDetail() {
   const postInteractions = usePostInteractions(memorialIds, user);
   const candle = useCandle(memorial?.id, user);
   const follow = useMemorialFollow(memorial?.id, user);
+  const { posts, postsError, onDeletePost } = useMemorialPosts(memorialIds);
+  const canPost = !!user && !user.isGuest;
 
   if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
 
@@ -521,6 +573,11 @@ export function ConnectedMemorialDetail() {
     <MemorialDetail 
       memorial={memorial}
       tributes={memorialTributes}
+      posts={posts}
+      postsError={postsError}
+      currentUserId={canPost ? user.id : undefined}
+      onCreatePost={canPost ? () => navigate(`/memorial/${memorial.id}/nova-publicacao`) : undefined}
+      onDeletePost={onDeletePost}
       {...postInteractions}
       {...candle}
       {...follow}
@@ -573,6 +630,56 @@ export function ConnectedCreateMemorial() {
   );
 }
 
+export function ConnectedEditMemorial() {
+  const { id } = useParams();
+  const { memorials, user, memorialsLoading, handleUpdateMemorial } = useApp();
+  const navigate = useNavigate();
+
+  const memorial = useMemo(() => memorials.find((m) => m.id === id), [memorials, id]);
+
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
+
+  // A RLS já impede que outra pessoa salve; aqui só evitamos mostrar o formulário
+  if (!user || user.isGuest || memorial.createdBy !== user.id) {
+    return (
+      <div className="h-full flex flex-col items-center justify-center gap-4 px-8 text-center">
+        <h1 className="text-lg font-medium text-white">Sem permissão</h1>
+        <p className="text-sm text-white/60 leading-relaxed">
+          Apenas quem criou este memorial pode editá-lo.
+        </p>
+        <button
+          onClick={() => navigate(`/memorial/${memorial.id}`)}
+          className="px-5 py-2.5 rounded-full bg-white/10 text-white text-sm hover:bg-white/20 transition-colors"
+        >
+          Ver memorial
+        </button>
+      </div>
+    );
+  }
+
+  const save = async ({ photoFile, coverFile, ...values }: EditMemorialChanges) => {
+    // Envia só as imagens trocadas; as outras continuam com a URL atual
+    const [photo, cover] = await Promise.all([
+      photoFile ? api.uploadMedia(photoFile, 'profile') : Promise.resolve(undefined),
+      coverFile ? api.uploadMedia(coverFile, 'cover') : Promise.resolve(undefined),
+    ]);
+    await handleUpdateMemorial(memorial.id, {
+      ...values,
+      ...(photo ? { photo } : {}),
+      ...(cover ? { cover } : {}),
+    });
+    navigate(`/memorial/${memorial.id}`);
+  };
+
+  return (
+    <EditMemorial
+      memorial={memorial}
+      onCancel={() => navigate(-1)}
+      onSave={save}
+    />
+  );
+}
+
 export function ConnectedWriteTribute() {
   const { id } = useParams();
   const { memorials, handleAddTribute, user, memorialsLoading } = useApp();
@@ -592,6 +699,29 @@ export function ConnectedWriteTribute() {
          handleAddTribute(t);
          navigate(`/memorial/${id}`);
        }}
+    />
+  );
+}
+
+export function ConnectedCreatePost() {
+  const { id } = useParams();
+  const { memorials, user, memorialsLoading } = useApp();
+  const navigate = useNavigate();
+
+  const memorial = useMemo(() => memorials.find((m) => m.id === id), [memorials, id]);
+
+  if (!memorial) return <MemorialUnavailable loading={memorialsLoading} />;
+  if (!user || user.isGuest) return <Navigate to={`/memorial/${memorial.id}`} replace />;
+
+  return (
+    <CreatePost
+      memorialName={memorial.name}
+      memorialPhoto={memorial.photo}
+      onCancel={() => navigate(`/memorial/${memorial.id}`)}
+      onPublish={async (caption, files) => {
+        await api.createMemorialPost({ memorialId: memorial.id, caption, files, authorName: user.name });
+        navigate(`/memorial/${memorial.id}`);
+      }}
     />
   );
 }

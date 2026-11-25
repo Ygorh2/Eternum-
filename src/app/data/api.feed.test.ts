@@ -8,6 +8,7 @@ const db = vi.hoisted(() => ({
 }))
 
 vi.mock('/utils/supabase/client', () => {
+  const errors: Record<string, any> = (globalThis as any).__feedErrors ??= {}
   function from(table: string) {
     const entry = { table, ops: [] as [string, ...unknown[]][] }
     db.calls.push(entry)
@@ -17,7 +18,7 @@ vi.mock('/utils/supabase/client', () => {
         get(_t, prop: string) {
           if (prop === 'then') {
             return (resolve: any, reject: any) =>
-              Promise.resolve({ data: db.rows[table] || [], error: null }).then(resolve, reject)
+              Promise.resolve(errors[table] ? { data: null, error: errors[table] } : { data: db.rows[table] || [], error: null }).then(resolve, reject)
           }
           return (...args: unknown[]) => {
             entry.ops.push([prop, ...args])
@@ -31,7 +32,7 @@ vi.mock('/utils/supabase/client', () => {
   return { supabase: { from } }
 })
 
-import { fetchFeedMemorialsPage, fetchFeedTributesPage, fetchFollowingScope } from './api'
+import { fetchFeedMemorialPostsPage, fetchFeedMemorialsPage, fetchFeedTributesPage, fetchFollowingScope } from './api'
 
 const ME = '11111111-1111-4111-8111-111111111111'
 const FRIEND = '22222222-2222-4222-8222-222222222222'
@@ -43,6 +44,7 @@ const argsOf = (i: number, name: string) => db.calls[i].ops.find(([n]) => n === 
 beforeEach(() => {
   db.calls = []
   db.rows = {}
+  ;(globalThis as any).__feedErrors = {}
 })
 
 describe('feed paginado na api', () => {
@@ -108,5 +110,27 @@ describe('feed paginado na api', () => {
     db.rows.follows = [{ following_id: FRIEND }]
     db.rows.memorial_follows = [{ memorial_id: MEM }]
     expect(await fetchFollowingScope(ME)).toEqual({ userIds: [ME, FRIEND], memorialIds: [MEM] })
+  })
+
+  it('publicações: Seguindo filtra por autor, dono do memorial e memorial seguido', async () => {
+    db.rows.memorial_posts = [
+      { id: 'p1', memorial_id: MEM, author_id: FRIEND, caption: 'Oi', media: [{ url: 'https://x/1.jpg', type: 'image' }], created_at: '2024-01-01T00:00:00Z', memorial: { id: MEM, name: 'Maria', type: 'pet' } },
+    ]
+    const result = await fetchFeedMemorialPostsPage({
+      scope: 'following',
+      type: 'all',
+      limit: 10,
+      following: { userIds: [ME], memorialIds: [MEM] },
+    })
+    expect(db.calls.map((_, i) => argsOf(i, 'in')?.[0])).toEqual(['author_id', 'memorial.created_by', 'memorial_id'])
+    expect(argsOf(0, 'select')?.[0]).toContain('memorials!inner')
+    expect(result).toHaveLength(1)
+    expect(result[0]).toMatchObject({ id: 'p1', authorId: FRIEND, caption: 'Oi', memorial: { name: 'Maria', type: 'pet' } })
+  })
+
+  it('publicações: sem a migration 0007 o feed segue sem elas', async () => {
+    ;(globalThis as any).__feedErrors.memorial_posts = { code: 'PGRST205', message: 'relation not found' }
+    vi.spyOn(console, 'warn').mockImplementation(() => {})
+    expect(await fetchFeedMemorialPostsPage({ scope: 'explore', type: 'all', limit: 10 })).toEqual([])
   })
 })

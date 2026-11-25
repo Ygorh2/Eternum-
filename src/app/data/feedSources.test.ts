@@ -3,6 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 vi.mock('./api', () => ({
   fetchFeedMemorialsPage: vi.fn(),
   fetchFeedTributesPage: vi.fn(),
+  fetchFeedMemorialPostsPage: vi.fn(),
 }))
 
 import * as api from './api'
@@ -24,17 +25,30 @@ describe('fetchFeedPage', () => {
   it('pede a mesma consulta a todas as fontes e junta em ordem', async () => {
     vi.mocked(api.fetchFeedMemorialsPage).mockResolvedValue([memorial('m1', '2024-01-01T00:00:00Z')] as any)
     vi.mocked(api.fetchFeedTributesPage).mockResolvedValue([tribute('t1', '2024-01-02T00:00:00Z')] as any)
+    vi.mocked(api.fetchFeedMemorialPostsPage).mockResolvedValue([
+      {
+        id: 'p1',
+        authorId: 'u3',
+        caption: 'Legenda',
+        media: [{ url: 'https://x/1.jpg', type: 'image' }],
+        createdAt: '2024-01-03T00:00:00Z',
+        memorial: { id: 'm1', name: 'Memorial m1', photo: '', type: 'person' },
+      },
+    ] as any)
     const q = { scope: 'explore' as const, type: 'all' as const, limit: 10 }
     const page = await fetchFeedPage(q)
     expect(api.fetchFeedMemorialsPage).toHaveBeenCalledWith(q)
     expect(api.fetchFeedTributesPage).toHaveBeenCalledWith(q)
-    expect(page.rows.map((r) => r.id)).toEqual(['t1', 'm1'])
+    expect(api.fetchFeedMemorialPostsPage).toHaveBeenCalledWith(q)
+    expect(page.rows.map((r) => r.id)).toEqual(['p1', 't1', 'm1'])
     expect(page.nextCursor).toBeNull()
 
-    const posts = rowsToPosts(page.rows, { authorName: (id) => (id === 'u1' ? 'Ana' : undefined) })
-    expect(posts.map((p) => p.sourceType)).toEqual(['tribute', 'memorial_created'])
-    expect(posts[1].author.name).toBe('Ana')
-    expect(authorIdsOf(page.rows)).toEqual(['u1'])
+    const names: Record<string, string> = { u1: 'Ana', u3: 'Bia' }
+    const posts = rowsToPosts(page.rows, { authorName: (id) => (id ? names[id] : undefined) })
+    expect(posts.map((p) => p.sourceType)).toEqual(['memorial_post', 'tribute', 'memorial_created'])
+    expect(posts[0]).toMatchObject({ postKey: 'post:p1', author: { name: 'Bia' }, content: { message: 'Legenda' } })
+    expect(posts[2].author.name).toBe('Ana')
+    expect(authorIdsOf(page.rows).sort()).toEqual(['u1', 'u3'])
   })
 
   it('aceita um novo tipo de item plugado como fonte', async () => {

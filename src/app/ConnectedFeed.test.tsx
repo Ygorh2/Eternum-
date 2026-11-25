@@ -10,6 +10,7 @@ vi.mock('./data/api', () => ({
   fetchFollowingScope: vi.fn().mockResolvedValue({ userIds: ['me'], memorialIds: [] }),
   fetchFeedMemorialsPage: vi.fn(),
   fetchFeedTributesPage: vi.fn(),
+  fetchFeedMemorialPostsPage: vi.fn().mockResolvedValue([]),
 }))
 
 let appContext: any
@@ -47,6 +48,7 @@ describe('<ConnectedFeed /> paginado', () => {
       all.filter((m) => !q.before || m.createdAt < q.before).slice(0, q.limit) as any,
     )
     vi.mocked(api.fetchFeedTributesPage).mockResolvedValue([])
+    vi.mocked(api.fetchFeedMemorialPostsPage).mockResolvedValue([])
   })
 
   it('carrega 10 por vez e busca a próxima página só quando pedida', async () => {

@@ -7,6 +7,7 @@ import type { PostInteractions, ReactionType } from '../data/api';
 import type { FeedPost, FeedScope, FeedTypeFilter } from '../utils/feed';
 import { getReactions } from '../utils/postInteractions';
 import { PostComments } from './PostComments';
+import { PostMediaCarousel } from './PostMediaCarousel';
 
 interface Props {
   /** Todos os memoriais visíveis (usado só na aba "Buscar Memoriais"). */
@@ -54,6 +55,7 @@ function formatRelativeDate(isoDate: string): string {
 }
 
 const NO_INTERACTIONS: PostInteractions = { reactions: {}, comments: {} };
+const NO_POSTS: MemorialPost[] = [];
 
 export function Feed({
   memorials,
@@ -384,6 +386,14 @@ export function Feed({
                       <MoreVertical size={18} />
                     </button>
                   </div>
+
+                  {/* Publicação com uma ou várias fotos/vídeos */}
+                  {post.content.media && (
+                    <PostMediaCarousel
+                      media={post.content.media}
+                      alt={post.content.message ? post.content.message.slice(0, 120) : `Publicação em memória de ${post.memorial.name}`}
+                    />
+                  )}
 
                   {/* Post Image */}
                   {post.content.image && (

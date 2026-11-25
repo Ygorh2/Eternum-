@@ -1,5 +1,6 @@
 import { supabase } from '/utils/supabase/client';
 import type { FeedQuery, FollowingScope } from '../utils/feed';
+import { MAX_CAPTION_LENGTH, MAX_POST_MEDIA } from '../utils/mediaValidation';
 
 // ------------------------------------------------------------------
 // Mapeadores: linha do banco (snake_case) <-> objeto usado nas telas
@@ -63,17 +64,32 @@ function sanitizeFileName(name: string) {
  * pública para salvar no memorial/tributo.
  */
 export async function uploadMedia(file: File, subfolder: string): Promise<string> {
+  return (await uploadMediaWithPath(file, subfolder)).url;
+}
+
+/** Igual a uploadMedia, mas devolve também o caminho no bucket (para poder apagar depois). */
+async function uploadMediaWithPath(file: File, subfolder: string): Promise<{ url: string; path: string }> {
   const userId = await requireUserId();
-  const path = `${userId}/${subfolder}/${Date.now()}-${sanitizeFileName(file.name)}`;
+  const random = Math.random().toString(36).slice(2, 8);
+  const path = `${userId}/${subfolder}/${Date.now()}-${random}-${sanitizeFileName(file.name)}`;
 
   const { error } = await supabase.storage.from(MEDIA_BUCKET).upload(path, file, {
     cacheControl: '3600',
     upsert: false,
+    contentType: file.type || undefined,
   });
   if (error) throw error;
 
   const { data } = supabase.storage.from(MEDIA_BUCKET).getPublicUrl(path);
-  return data.publicUrl;
+  return { url: data.publicUrl, path };
+}
+
+/** Caminho no bucket a partir da URL pública (null se a URL não for do nosso bucket). */
+export function storagePathFromPublicUrl(url: string): string | null {
+  const marker = `/storage/v1/object/public/${MEDIA_BUCKET}/`;
+  const i = url.indexOf(marker);
+  if (i === -1) return null;
+  return decodeURIComponent(url.slice(i + marker.length).split('?')[0]);
 }
 
 /** Envia vários arquivos (galeria) em paralelo e devolve URL + tipo de cada um. */
@@ -133,6 +149,39 @@ export async function createMemorial(input: any) {
     .single();
 
   if (error) throw error;
+  return mapMemorialFromDb(data);
+}
+
+/**
+ * Atualiza os dados editáveis de um memorial. Só o dono consegue: a policy
+ * "memorials_update_own" (auth.uid() = created_by) bloqueia os demais, e
+ * filtramos por created_by também aqui para devolver uma mensagem clara.
+ * Campos ausentes em `changes` não são alterados.
+ */
+export async function updateMemorial(id: string, changes: any) {
+  const userId = await requireUserId();
+
+  const row: Record<string, any> = {};
+  if (changes.name !== undefined) row.name = String(changes.name).trim();
+  if (changes.birthDate !== undefined) row.birth_date = changes.birthDate || null;
+  if (changes.deathDate !== undefined) row.death_date = changes.deathDate || null;
+  if (changes.bio !== undefined) row.bio = changes.bio || null;
+  if (changes.quote !== undefined) row.quote = changes.quote || null;
+  if (changes.photo !== undefined) row.photo = changes.photo || null;
+  if (changes.cover !== undefined) row.cover = changes.cover || null;
+  if (changes.accessGroup !== undefined) row.access_group = changes.accessGroup;
+  if (changes.addToSky !== undefined) row.add_to_sky = !!changes.addToSky;
+
+  const { data, error } = await supabase
+    .from('memorials')
+    .update(row)
+    .eq('id', id)
+    .eq('created_by', userId)
+    .select()
+    .maybeSingle();
+
+  if (error) throw error;
+  if (!data) throw new Error('Você não tem permissão para editar este memorial.');
   return mapMemorialFromDb(data);
 }
 
@@ -299,6 +348,191 @@ export async function fetchFeedTributesPage(q: FeedQuery) {
   return rows.map((row: any) => ({
     ...mapTributeFromDb(row),
     createdAt: row.created_at,
+    memorial: {
+      id: row.memorial?.id ?? row.memorial_id,
+      name: row.memorial?.name || '',
+      photo: row.memorial?.photo || '',
+      type: row.memorial?.type === 'pet' ? ('pet' as const) : ('person' as const),
+      createdBy: row.memorial?.created_by,
+    },
+  }));
+}
+
+// ------------------------------------------------------------------
+// Publicações com foto/vídeo e legenda (tabela memorial_posts — migration 0007)
+// ------------------------------------------------------------------
+
+export type PostMediaItem = { url: string; type: 'image' | 'video' };
+
+export type MemorialPost = {
+  id: string;
+  memorialId: string;
+  authorId: string;
+  authorName: string;
+  caption: string;
+  media: PostMediaItem[];
+  createdAt: string;
+};
+
+function mapPostFromDb(row: any, authorName: string): MemorialPost {
+  const media = Array.isArray(row.media) ? row.media : [];
+  return {
+    id: row.id,
+    memorialId: row.memorial_id,
+    authorId: row.author_id,
+    authorName,
+    caption: row.caption || '',
+    media: media
+      .filter((m: any) => m && typeof m.url === 'string')
+      .map((m: any) => ({ url: m.url, type: m.type === 'video' ? 'video' : 'image' })),
+    createdAt: row.created_at,
+  };
+}
+
+const POST_COLUMNS = 'id, memorial_id, author_id, caption, media, created_at';
+
+/** Publicações desses memoriais, da mais recente para a mais antiga (a RLS esconde as de memoriais privados). */
+export async function fetchMemorialPosts(memorialIds: string[]): Promise<MemorialPost[]> {
+  if (memorialIds.length === 0) return [];
+  const rows: any[] = [];
+  for (const ids of chunk(memorialIds, 100)) {
+    const { data, error } = await supabase
+      .from('memorial_posts')
+      .select(POST_COLUMNS)
+      .in('memorial_id', ids)
+      .order('created_at', { ascending: false });
+    if (error) throw error;
+    rows.push(...(data || []));
+  }
+  rows.sort((a, b) => (a.created_at < b.created_at ? 1 : a.created_at > b.created_at ? -1 : 0));
+  const names = await fetchProfilesByIds(Array.from(new Set(rows.map((r) => r.author_id))));
+  return rows.map((row) => mapPostFromDb(row, names[row.author_id] || 'Usuário'));
+}
+
+/**
+ * Cria uma publicação: envia os arquivos para o Storage e depois salva a linha.
+ * Se salvar falhar, apaga os arquivos já enviados para não deixar lixo.
+ * Os arquivos devem ter sido validados antes (validateMediaFiles).
+ */
+export async function createMemorialPost(input: {
+  memorialId: string;
+  caption: string;
+  files: File[];
+  authorName: string;
+}): Promise<MemorialPost> {
+  const userId = await requireUserId();
+  const caption = input.caption.trim();
+  if (input.files.length === 0) throw new Error('Escolha pelo menos uma foto ou vídeo.');
+  if (input.files.length > MAX_POST_MEDIA) {
+    throw new Error(`Uma publicação pode ter no máximo ${MAX_POST_MEDIA} arquivos.`);
+  }
+  if (caption.length > MAX_CAPTION_LENGTH) {
+    throw new Error(`A legenda pode ter no máximo ${MAX_CAPTION_LENGTH} caracteres.`);
+  }
+
+  const uploadedPaths: string[] = [];
+  try {
+    const media: PostMediaItem[] = [];
+    for (const file of input.files) {
+      const { url, path } = await uploadMediaWithPath(file, `posts/${input.memorialId}`);
+      uploadedPaths.push(path);
+      media.push({ url, type: file.type.startsWith('video/') ? 'video' : 'image' });
+    }
+
+    const { data, error } = await supabase
+      .from('memorial_posts')
+      .insert({
+        memorial_id: input.memorialId,
+        author_id: userId,
+        caption: caption || null,
+        media,
+      })
+      .select(POST_COLUMNS)
+      .single();
+    if (error) throw error;
+    return mapPostFromDb(data, input.authorName);
+  } catch (err) {
+    if (uploadedPaths.length > 0) {
+      await supabase.storage.from(MEDIA_BUCKET).remove(uploadedPaths).catch(() => undefined);
+    }
+    throw err;
+  }
+}
+
+export async function deleteMemorialPost(post: Pick<MemorialPost, 'id' | 'media' | 'authorId' | 'memorialId'>) {
+  const userId = await requireUserId();
+  // .select() devolve as linhas apagadas: se a RLS bloquear, volta vazio (sem erro)
+  const { data, error } = await supabase.from('memorial_posts').delete().eq('id', post.id).select('id');
+  if (error) throw error;
+  if (!data || data.length === 0) throw new Error('Você não tem permissão para apagar esta publicação.');
+  // Apaga os arquivos só quando quem apaga é o próprio autor, e só os da pasta
+  // de publicações dele. As URLs vêm da linha (escritas por quem publicou): se o
+  // dono do memorial apagasse por elas, alguém poderia apontar para arquivos do
+  // dono (foto, capa) e fazê-lo apagá-los sem querer.
+  if (post.authorId !== userId) return;
+  const allowedPrefix = `${userId}/posts/${post.memorialId}/`;
+  const paths = post.media
+    .map((m) => storagePathFromPublicUrl(m.url))
+    .filter((p): p is string => !!p && p.startsWith(allowedPrefix) && !p.includes('..'));
+  if (paths.length > 0) {
+    await supabase.storage.from(MEDIA_BUCKET).remove(paths).catch(() => undefined);
+  }
+}
+
+/** Publicações (memorial_posts, migration 0007) com o memorial embutido. */
+/**
+ * Tabela ainda não criada (migration não aplicada). Assim o feed continua
+ * funcionando com memoriais e homenagens enquanto a 0007 não for rodada.
+ */
+function isMissingTable(error: any): boolean {
+  if (!error) return false;
+  if (error.code === '42P01' || error.code === 'PGRST205') {
+    console.warn('Publicações ainda não disponíveis (rode a migration 0007):', error.message);
+    return true;
+  }
+  return false;
+}
+
+export async function fetchFeedMemorialPostsPage(q: FeedQuery) {
+  const base = () => {
+    let req = supabase
+      .from('memorial_posts')
+      .select(`${POST_COLUMNS}, memorial:memorials!inner(id, name, photo, type, created_by)`)
+      .order('created_at', { ascending: false })
+      .order('id', { ascending: false })
+      .limit(q.limit);
+    if (q.before) req = req.lt('created_at', q.before);
+    if (q.type !== 'all') req = req.eq('memorial.type', q.type);
+    return req;
+  };
+
+  let rows: any[];
+  if (q.scope === 'following') {
+    const userIds = onlyUuids(q.following?.userIds || []);
+    const memorialIds = onlyUuids(q.following?.memorialIds || []);
+    const requests = [
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('author_id', ids)),
+      ...chunk(userIds, FEED_ID_CHUNK).map((ids) => base().in('memorial.created_by', ids)),
+      ...chunk(memorialIds, FEED_ID_CHUNK).map((ids) => base().in('memorial_id', ids)),
+    ];
+    const results = await Promise.all(requests);
+    rows = [];
+    for (const r of results) {
+      if (isMissingTable(r.error)) return [];
+      if (r.error) throw r.error;
+      rows.push(...(r.data || []));
+    }
+    rows = newestFirst(rows, q.limit);
+  } else {
+    const { data, error } = await base();
+    if (isMissingTable(error)) return [];
+    if (error) throw error;
+    rows = data || [];
+  }
+
+  return rows.map((row: any) => ({
+    // o nome do autor é preenchido no feed (busca de perfis em lote)
+    ...mapPostFromDb(row, ''),
     memorial: {
       id: row.memorial?.id ?? row.memorial_id,
       name: row.memorial?.name || '',

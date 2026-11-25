@@ -10,7 +10,7 @@
 // src/app/data/feedSources.ts que devolva FeedRow com um `kind` novo e um
 // `toPosts` que transforme a linha em FeedPost. O componente Feed não muda.
 
-import { galleryPostKey, memorialPostKey, tributePostKey } from './postKeys';
+import { galleryPostKey, memorialPostItemKey, memorialPostKey, tributePostKey } from './postKeys';
 
 export type FeedScope = 'following' | 'explore';
 export type FeedTypeFilter = 'all' | 'person' | 'pet';
@@ -60,6 +60,8 @@ export type FeedPost = {
     video?: string;
     videoType?: string;
     message?: string;
+    /** Várias fotos/vídeos (carrossel) — publicações. */
+    media?: { url: string; type: 'image' | 'video' }[];
   };
   author: {
     id?: string;
@@ -224,6 +226,33 @@ export function tributeToPosts(t: TributeLike): FeedPost[] {
         relationship: t.type,
       },
       createdAt: t.createdAt || '',
+    },
+  ];
+}
+
+/** Publicação com foto/vídeo e legenda (api.fetchFeedMemorialPostsPage). */
+type MemorialPostLike = {
+  id: string;
+  authorId?: string;
+  caption?: string;
+  media: { url: string; type: 'image' | 'video' }[];
+  createdAt: string;
+  memorial: FeedMemorialInfo;
+};
+
+export function memorialPostToPosts(p: MemorialPostLike, authorName: string): FeedPost[] {
+  return [
+    {
+      id: `post-${p.id}`,
+      postKey: memorialPostItemKey(p.id),
+      sourceType: 'memorial_post',
+      memorial: p.memorial,
+      content: {
+        media: p.media,
+        message: p.caption || undefined,
+      },
+      author: { id: p.authorId, name: authorName },
+      createdAt: p.createdAt,
     },
   ];
 }

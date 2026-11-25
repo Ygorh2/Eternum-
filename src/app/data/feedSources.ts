@@ -6,6 +6,7 @@ import * as api from './api';
 import {
   mergeFeedPages,
   memorialToPosts,
+  memorialPostToPosts,
   tributeToPosts,
   type FeedPage,
   type FeedPost,
@@ -51,7 +52,21 @@ const tributesSource: FeedSource = {
   toPosts: (row) => tributeToPosts(row.data),
 };
 
-export const FEED_SOURCES: FeedSource[] = [memorialsSource, tributesSource];
+/** Publicações com foto/vídeo e legenda (memorial_posts). */
+const memorialPostsSource: FeedSource = {
+  kind: 'memorial_post',
+  fetchPage: async (q) =>
+    (await api.fetchFeedMemorialPostsPage(q)).map((p: any) => ({
+      kind: 'memorial_post',
+      id: p.id,
+      createdAt: p.createdAt,
+      data: p,
+    })),
+  toPosts: (row, ctx) => memorialPostToPosts(row.data, ctx.authorName(row.data.authorId) || 'Usuário'),
+  authorIds: (row) => (row.data.authorId ? [row.data.authorId] : []),
+};
+
+export const FEED_SOURCES: FeedSource[] = [memorialsSource, tributesSource, memorialPostsSource];
 
 /** Busca uma página do feed juntando todas as fontes. */
 export async function fetchFeedPage(q: FeedQuery, sources: FeedSource[] = FEED_SOURCES): Promise<FeedPage> {

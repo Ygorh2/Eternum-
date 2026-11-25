@@ -87,3 +87,24 @@ describe('<Feed /> paginado', () => {
     expect(screen.queryByText('Nenhum post ainda')).not.toBeInTheDocument()
   })
 })
+
+describe('<Feed /> publicações', () => {
+  it('mostra a publicação com foto e legenda do memorial', () => {
+    renderFeed({
+      posts: [
+        {
+          id: 'post-p1',
+          postKey: 'post:p1',
+          sourceType: 'memorial_post',
+          memorial: { id: 'm1', name: 'Maria', photo: '', type: 'person' },
+          content: { message: 'Aniversário de 80 anos', media: [{ url: 'https://x/1.jpg', type: 'image' }] },
+          author: { name: 'João' },
+          createdAt: '2024-05-01T12:00:00Z',
+        },
+      ],
+    })
+    expect(screen.getByText('Aniversário de 80 anos')).toBeInTheDocument()
+    expect(screen.getByAltText('Aniversário de 80 anos')).toHaveAttribute('src', 'https://x/1.jpg')
+    expect(screen.getByText('João')).toBeInTheDocument()
+  })
+})
