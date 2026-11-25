@@ -1,6 +1,7 @@
 import { supabase } from '/utils/supabase/client';
 import type { FeedQuery, FollowingScope } from '../utils/feed';
 import { MAX_CAPTION_LENGTH, MAX_POST_MEDIA } from '../utils/mediaValidation';
+import { compressImage } from '../utils/imageCompression';
 import {
   MEDIA_BUCKET,
   SIGNED_URL_TTL_SECONDS,
@@ -74,8 +75,11 @@ export async function uploadMedia(file: File, subfolder: string): Promise<string
 }
 
 /** Igual a uploadMedia, mas devolve também o caminho no bucket (para poder apagar depois). */
-async function uploadMediaWithPath(file: File, subfolder: string): Promise<{ url: string; path: string }> {
+async function uploadMediaWithPath(original: File, subfolder: string): Promise<{ url: string; path: string }> {
   const userId = await requireUserId();
+  // Fotos são reduzidas (até 1600px) e comprimidas no aparelho antes de subir.
+  // Vídeos e GIFs seguem como estão; se a compressão falhar, vai o original.
+  const file = await compressImage(original);
   const random = Math.random().toString(36).slice(2, 8);
   const path = `${userId}/${subfolder}/${Date.now()}-${random}-${sanitizeFileName(file.name)}`;
 

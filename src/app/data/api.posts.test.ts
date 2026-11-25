@@ -3,6 +3,8 @@ import { describe, it, expect, vi, beforeEach } from 'vitest'
 // Supabase falso: testes não podem chamar o Supabase real
 const state = vi.hoisted(() => ({
   uploaded: [] as string[],
+  uploadedFiles: [] as File[],
+  uploadedTypes: [] as (string | undefined)[],
   removed: [] as string[][],
   inserted: [] as any[],
   insertError: null as any,
@@ -10,8 +12,10 @@ const state = vi.hoisted(() => ({
 
 vi.mock('/utils/supabase/client', () => {
   const storageBucket = {
-    upload: vi.fn(async (path: string) => {
+    upload: vi.fn(async (path: string, file: File, opts?: { contentType?: string }) => {
       state.uploaded.push(path)
+      state.uploadedFiles.push(file)
+      state.uploadedTypes.push(opts?.contentType)
       return { error: null }
     }),
     getPublicUrl: (path: string) => ({
@@ -46,6 +50,10 @@ vi.mock('/utils/supabase/client', () => {
   }
 })
 
+// Compressão falsa: por padrão devolve o próprio arquivo
+const compress = vi.hoisted(() => ({ fn: vi.fn(async (f: File) => f) }))
+vi.mock('../utils/imageCompression', () => ({ compressImage: (f: File) => compress.fn(f) }))
+
 import { createMemorialPost, deleteMemorialPost, storagePathFromPublicUrl } from './api'
 
 const photo = () => new File(['x'], 'foto 1.jpg', { type: 'image/jpeg' })
@@ -54,6 +62,10 @@ const video = () => new File(['x'], 'v.mp4', { type: 'video/mp4' })
 describe('createMemorialPost', () => {
   beforeEach(() => {
     state.uploaded = []
+    state.uploadedFiles = []
+    state.uploadedTypes = []
+    compress.fn.mockReset()
+    compress.fn.mockImplementation(async (f: File) => f)
     state.removed = []
     state.inserted = []
     state.insertError = null
@@ -66,6 +78,18 @@ describe('createMemorialPost', () => {
     expect(state.inserted[0]).toMatchObject({ memorial_id: 'm1', author_id: 'me', caption: 'Saudade' })
     expect(post.media.map((m) => m.type)).toEqual(['image', 'video'])
     expect(post.caption).toBe('Saudade')
+  })
+
+  it('comprime as fotos antes de enviar e usa o arquivo comprimido', async () => {
+    const small = new File(['y'], 'foto_1.webp', { type: 'image/webp' })
+    compress.fn.mockImplementation(async (f: File) => (f.type.startsWith('image/') ? small : f))
+    const v = video()
+    const post = await createMemorialPost({ memorialId: 'm1', caption: '', files: [photo(), v], authorName: 'Eu' })
+    expect(compress.fn).toHaveBeenCalledTimes(2)
+    expect(state.uploadedFiles).toEqual([small, v])
+    expect(state.uploadedTypes).toEqual(['image/webp', 'video/mp4'])
+    expect(state.uploaded[0]).toMatch(/foto_1\.webp$/)
+    expect(post.media.map((m) => m.type)).toEqual(['image', 'video'])
   })
 
   it('apaga os arquivos enviados se salvar a publicação falhar', async () => {
